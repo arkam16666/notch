@@ -1,0 +1,21 @@
+[package]
+name = "notch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+block2 = "0.6.2"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+objc2 = "0.6.5"
+objc2-app-kit = "0.3.2"
+objc2-av-foundation = "0.3.2"
+objc2-core-audio = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-location = "0.3.2"
+objc2-core-wlan = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-io-bluetooth = "0.3.2"
+objc2-quartz-core = "0.3.2"
+serde_json = "1.0.154"

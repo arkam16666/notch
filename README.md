@@ -1,0 +1,86 @@
+# Notch
+
+Dynamic Island สำหรับ MacBook ที่มี notch — เขียนด้วย Rust ล้วน (AppKit ผ่าน [`objc2`](https://github.com/madsmtm/objc2))
+
+ชี้เมาส์ที่ notch แล้วมันจะเด้ง, คลิกเพื่อขยาย, คลิกที่อื่นเพื่อหุบ
+
+## ทำอะไรได้บ้าง
+
+| แท็บ | |
+|---|---|
+| ♪ **เพลง** | Spotify · Apple Music · YouTube / YouTube Music (Chrome, Brave, Edge, Safari) — ปก, ชื่อเพลง, เล่น/ข้าม, เลื่อนเวลา, ปรับเสียงของตัวเล่น, พื้นหลังปกเบลอ, แท่ง waveform เด้งตามเสียงจริง |
+| ✦ **Claude** | % การใช้งานรอบ 5 ชม. และรายสัปดาห์ (เหมือน `/usage`), สรุปวันนี้, **ถาม Claude** ได้จากใน notch (ใช้ Claude Code ที่ติดตั้งอยู่) |
+| 🗃 **ชั้นวาง** | ลากไฟล์มาพักไว้ แล้วค่อยลากออกไปวางที่อื่น |
+| ☁ **อากาศ** | อุณหภูมิ, สภาพอากาศ, พยากรณ์รายชั่วโมง (Open-Meteo) |
+| 📷 **กล้อง** | กระจกส่องหน้าจากกล้องหน้า |
+| ⚙ **ควบคุม** | Wi-Fi / Bluetooth (ดับเบิลคลิกเพื่อดูรายชื่อและเชื่อมต่อใน notch), โหมดมืด, AirDrop, เสียง, ความสว่าง |
+
+และเวลา notch หดอยู่:
+
+- ตัวหมุน ✻ ตอน **Claude Code กำลังทำงาน** (ผ่าน hooks), ✋ ตอนรอคุณ, ✓ ตอนเสร็จ
+- แถบ **กำลังชาร์จ**, **แบตเหลือน้อย**, **ปรับเสียง/ความสว่าง** แบบ iPhone
+- ไอคอนกล้องสีเขียวตอนกล้องเปิด
+- ลากไฟล์มาที่ notch → พักไว้ในชั้นวาง หรือส่ง AirDrop
+- มุมขวาบนตอนขยาย: CPU · RAM · อุณหภูมิ · แบต
+
+## ติดตั้ง
+
+ต้องมี: MacBook ที่มี notch (เครื่องอื่นจะวาด notch ปลอมให้), macOS 14.2+, [Rust](https://rustup.rs)
+
+```sh
+git clone <repo> notch && cd notch
+./scripts/install.sh
+```
+
+ตัวติดตั้งจะ build แล้วลง `/Applications/Notch.app`, ตั้ง hooks ของ Claude Code (ถ้ามี), ตั้งให้เปิดเองตอนเข้าเครื่อง แล้วเปิดแอปให้ — รันซ้ำเพื่ออัปเดต
+
+ถอนการติดตั้ง: `./scripts/uninstall.sh` (ใส่ `--purge` เพื่อลบข้อมูลใน `~/.claude/notch` ด้วย)
+
+ปิดแอป: คลิกขวาที่ notch
+
+## สิทธิ์ที่ macOS จะถาม (ใช้เมื่อเปิดฟีเจอร์นั้นเท่านั้น)
+
+| สิทธิ์ | ใช้กับ |
+|---|---|
+| Automation (Spotify / Music / Chrome / Safari) | อ่านเพลงที่เล่นและควบคุม |
+| Location | ชื่อ Wi-Fi และสภาพอากาศ |
+| Camera | แท็บกล้อง |
+| System Audio Recording | แท่ง waveform เด้งตามเสียง (ไม่บันทึกเสียง) |
+| Accessibility | ปุ่มเพลงสำหรับ YouTube ที่ไม่ได้เปิด JavaScript (ส่ง media key) |
+| Keychain: "Claude Code-credentials" | % การใช้งาน Claude — token ถูกส่งไป `api.anthropic.com` เท่านั้น |
+
+YouTube แบบเต็ม (เวลา, เลื่อนเวลา, เสียง) ต้องเปิด Chrome → **View → Developer → Allow JavaScript from Apple Events**
+
+## ความเป็นส่วนตัว
+
+- ทุกอย่างทำงานในเครื่อง ยกเว้น: สภาพอากาศ (พิกัดปัดเศษ ~1 กม. ไปที่ Open-Meteo), ปกเพลง/ข้อมูลวิดีโอจาก YouTube, และ % การใช้งาน Claude (ไปที่ Anthropic)
+- ไม่มี analytics ไม่มีการเก็บ log
+
+## หมายเหตุ
+
+บางอย่างใช้ API ภายในของ macOS ที่ Apple ไม่ได้รับประกัน (Bluetooth, ความสว่าง, อุณหภูมิ) และ endpoint การใช้งานของ Claude ก็ไม่ใช่ API ทางการ — ถ้าเปลี่ยนในอนาคต ส่วนนั้นจะหายไปแต่แอปยังทำงานได้
+
+## โครงสร้าง
+
+```
+src/
+  main.rs        UI ทั้งหมด (NSPanel + NSView วาดเอง)
+  player.rs      Spotify / Music / YouTube ผ่าน AppleScript
+  status.rs      สถานะ Claude Code จาก hooks
+  claude.rs      สรุป token จาก log ของ Claude Code
+  claude_api.rs  % การใช้งานจริง
+  ask.rs         ถาม Claude (`claude -p`)
+  markdown.rs    แสดงคำตอบแบบ Markdown
+  tap.rs         Core Audio process tap → แท่ง waveform
+  nets.rs        รายชื่อ Wi-Fi / Bluetooth
+  controls.rs    Wi-Fi / Bluetooth / เสียง / ความสว่าง / โหมดมืด
+  weather.rs     Open-Meteo
+  sysinfo.rs     CPU / RAM / อุณหภูมิ
+  …
+scripts/
+  bundle.sh      สร้าง dist/Notch.app
+  install.sh     ติดตั้งครั้งเดียวจบ
+  uninstall.sh
+```
+
+`notch --snapshot <dir>` เรนเดอร์ทุกหน้าเป็น PNG (ใช้ตรวจ UI โดยไม่ต้องแคปหน้าจอ), `notch --dump` พิมพ์สถานะที่ตรวจเจอ
