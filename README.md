@@ -4,6 +4,26 @@ Dynamic Island สำหรับ MacBook ที่มี notch — เขีย
 
 ชี้เมาส์ที่ notch แล้วมันจะเด้ง, คลิกเพื่อขยาย, คลิกที่อื่นเพื่อหุบ
 
+<p align="center">
+  <img src="docs/screenshots/collapsed.png" width="420" alt="notch หดอยู่: ไอคอนกล้อง, ปกเพลง, ตัวหมุน Claude"><br>
+  <img src="docs/screenshots/expanded-playing.png" width="640" alt="หน้าเพลง">
+</p>
+
+## ภาพตัวอย่าง
+
+| | |
+|---|---|
+| ![ถาม Claude](docs/screenshots/ask.png) | ![ควบคุม](docs/screenshots/controls.png) |
+| **✦ Claude** — % การใช้งาน + ถาม Claude | **⚙ ควบคุม** — Wi-Fi, Bluetooth, โหมดมืด, AirDrop |
+| ![Wi-Fi](docs/screenshots/wifi.png) | ![Bluetooth](docs/screenshots/bluetooth.png) |
+| **รายชื่อ Wi-Fi** ใน notch (ดับเบิลคลิก Wi-Fi) | **อุปกรณ์ Bluetooth** (ดับเบิลคลิก Bluetooth) |
+| ![อากาศ](docs/screenshots/weather.png) | ![ชั้นวาง](docs/screenshots/shelf.png) |
+| **☁ อากาศ** | **🗃 ชั้นวาง** — พักไฟล์ไว้แล้วลากออก |
+| ![ลากไฟล์มา](docs/screenshots/drop.png) | ![ชาร์จ](docs/screenshots/charging.png) ![เสียง](docs/screenshots/volume.png) |
+| **ลากไฟล์มาที่ notch** — พักไว้ หรือ AirDrop | **แถบแจ้งเตือน** — ชาร์จ, เสียง/ความสว่าง |
+
+> ภาพสร้างด้วย `NOTCH_DEMO=1 notch --snapshot docs/screenshots` (เพลง/ตัวเลขสมมติ)
+
 ## ทำอะไรได้บ้าง
 
 | แท็บ | |

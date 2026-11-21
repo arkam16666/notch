@@ -3903,19 +3903,82 @@ fn detect_geometry(mtm: MainThreadMarker) -> Geometry {
     }
 }
 
+/// Generated cover art for demo screenshots (soft gradient + rings).
+fn demo_artwork() -> Retained<NSImage> {
+    let size = 300.0;
+    let img = NSImage::initWithSize(NSImage::alloc(), NSSize::new(size, size));
+    #[allow(deprecated)]
+    img.lockFocus();
+    let colors = NSArray::from_retained_slice(&[
+        rgb((0.98, 0.42, 0.45), 1.0),
+        rgb((0.62, 0.3, 0.85), 1.0),
+        rgb((0.18, 0.2, 0.55), 1.0),
+    ]);
+    if let Some(g) = NSGradient::initWithColors(NSGradient::alloc(), &colors) {
+        g.drawInRect_angle(rect(0.0, 0.0, size, size), 45.0);
+    }
+    for (r, alpha) in [(120.0, 0.18), (85.0, 0.22), (50.0, 0.3)] {
+        let p = NSBezierPath::bezierPathWithOvalInRect(rect(size / 2.0 - r, size / 2.0 - r, 2.0 * r, 2.0 * r));
+        p.setLineWidth(6.0);
+        white(alpha).setStroke();
+        p.stroke();
+    }
+    #[allow(deprecated)]
+    img.unlockFocus();
+    img
+}
+
 /// `notch --snapshot DIR`: render the collapsed + expanded island with the
 /// current track to PNGs (handy for checking the design without a screen grab).
 fn snapshot(mtm: MainThreadMarker, dir: &str) {
+    // NOTCH_DEMO=1: made-up track, generated artwork and sample numbers —
+    // for README screenshots (no copyrighted cover art, no personal data).
+    let demo = std::env::var_os("NOTCH_DEMO").is_some();
     let (cmd_tx, _cmd_rx) = mpsc::channel();
     let (msg_tx, msg_rx) = mpsc::channel();
-    let track = player::current();
-    let art = track.as_ref().and_then(player::fetch_artwork);
+    let track = if demo {
+        Some(Track {
+            app: App::Spotify,
+            playing: true,
+            title: "Midnight Drive".into(),
+            artist: "The Placeholders".into(),
+            id: "demo".into(),
+            position: 85.0,
+            duration: 214.0,
+            artwork_url: None,
+            tab: None,
+            full: true,
+            volume: Some(0.65),
+        })
+    } else {
+        player::current()
+    };
+    let art = if demo { None } else { track.as_ref().and_then(player::fetch_artwork) };
     msg_tx.send(Msg::Track(track)).unwrap();
     msg_tx.send(Msg::Artwork(art)).unwrap();
     let (usage_tx, usage_rx) = mpsc::channel();
-    usage_tx.send(claude::current()).unwrap();
+    usage_tx
+        .send(if demo {
+            let mut u = claude::Usage::default();
+            u.today.input = 1_200;
+            u.today.output = 310_000;
+            u.today.cache_write = 1_400_000;
+            u.today.cache_read = 46_000_000;
+            u.today_messages = 182;
+            u.top_model = Some("Opus 5.5".into());
+            u
+        } else {
+            claude::current()
+        })
+        .unwrap();
     let (status_tx, status_rx) = mpsc::channel();
-    status_tx.send(status::current()).unwrap();
+    status_tx
+        .send(if demo {
+            vec![status::Session { project: "notch".into(), activity: status::Activity::Tool("Bash".into()), since: status::unix_now() - 42.0 }]
+        } else {
+            status::current()
+        })
+        .unwrap();
     let (sys_tx, sys_rx) = mpsc::channel();
     let _ = sys_tx.send(sysinfo::current());
     let (limits_tx, limits_rx) = mpsc::channel();
@@ -3946,6 +4009,19 @@ fn snapshot(mtm: MainThreadMarker, dir: &str) {
         new_state(detect_geometry(mtm), cmd_tx, msg_rx, usage_rx, status_rx, controls_rx, action_tx, req_tx, resp_rx, wx_tx, wx_rx, privacy_rx, sys_rx, limits_rx, limits_poke, ask_tx, ask_rx),
     );
     view.tick();
+    if demo {
+        let art = demo_artwork();
+        let mut st = view.ivars().state.borrow_mut();
+        st.accent = accent_from(&art).unwrap_or(DEFAULT_ACCENT);
+        st.art_blur = blurred(&art);
+        st.art = Some(art);
+        st.app_icon = app_icon(App::Spotify).or_else(|| app_icon(App::Music)).map(|i| (App::Spotify, i));
+        st.eq_levels = [0.55, 0.95, 0.7, 0.4];
+        st.spin_frame = 4; // ✻
+        if let Some(x) = st.sys.as_mut() {
+            x.cpu = 0.18;
+        }
+    }
     for (name, expanded, hover, playing, page) in [
         ("collapsed", false, None, false, Page::Music),
         ("expanded-paused", true, None, false, Page::Music),
