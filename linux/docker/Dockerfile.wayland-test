@@ -1,0 +1,10 @@
+# Headless Wayland session (sway) + an MPRIS player, to run the real app.
+FROM notch-linux-debian
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      sway grim mpv mpv-mpris ffmpeg dbus dbus-x11 playerctl xwayland \
+ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends wlrctl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends xvfb openbox && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends x11-xserver-utils && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends picom && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends hsetroot && rm -rf /var/lib/apt/lists/*

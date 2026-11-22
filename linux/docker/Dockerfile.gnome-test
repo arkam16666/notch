@@ -1,0 +1,6 @@
+# Headless GNOME Shell (Wayland) to try Notch on GNOME for real.
+FROM notch-wayland-test
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gnome-shell xwayland gnome-settings-daemon libglib2.0-bin dbus-user-session \
+ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends python3-dbusmock && rm -rf /var/lib/apt/lists/*

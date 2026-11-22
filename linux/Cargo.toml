@@ -1,0 +1,65 @@
+[package]
+name = "notch"
+version = "0.1.0"
+edition = "2024"
+description = "A Dynamic Island for the top of your Linux desktop: music, Claude Code, timer, clipboard"
+license = "MIT"
+repository = "https://github.com/arkam16666/notch"
+readme = "README.md"
+
+# its own workspace (the macOS app lives in the repository root)
+[workspace]
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
+cairo-rs = { version = "0.22", features = ["png"] }
+gtk4-layer-shell = "0.9"
+gdk4-x11 = "0.11"
+pangocairo = "0.22"
+zbus = "5"
+x11rb = { version = "0.14", features = ["allow-unsafe-code", "shape"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[profile.release]
+lto = true
+strip = true
+
+# ---- packages -------------------------------------------------------------
+
+[package.metadata.deb]
+maintainer = "Notch contributors"
+section = "utils"
+priority = "optional"
+# gtk4-layer-shell is linked in statically (build-layer-shell.sh), so
+# distros without the package (Ubuntu 24.04, Mint 22, Debian 12) work too
+depends = "$auto, libgtk-4-1"
+recommends = "pulseaudio-utils, wl-clipboard, network-manager, bluez"
+extended-description = """\
+A Dynamic Island that sits at the top centre of the screen: the song that's \
+playing (any MPRIS player — Spotify, browsers, VLC…), Claude Code's status \
+and usage, a timer, clipboard history and volume / brightness / battery \
+banners. Works on KDE Plasma, Hyprland, Sway and other wlroots compositors \
+(layer-shell) and on X11; on GNOME it runs through XWayland."""
+assets = [
+    ["target/release/notch", "usr/bin/", "755"],
+    ["packaging/notch.desktop", "usr/share/applications/", "644"],
+    ["packaging/notch-autostart.desktop", "etc/xdg/autostart/notch.desktop", "644"],
+    ["../docs/icon.png", "usr/share/icons/hicolor/256x256/apps/notch.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Dynamic Island for the Linux desktop"
+assets = [
+    { source = "target/release/notch", dest = "/usr/bin/notch", mode = "755" },
+    { source = "packaging/notch.desktop", dest = "/usr/share/applications/notch.desktop", mode = "644" },
+    { source = "packaging/notch-autostart.desktop", dest = "/etc/xdg/autostart/notch.desktop", mode = "644" },
+    { source = "../docs/icon.png", dest = "/usr/share/icons/hicolor/256x256/apps/notch.png", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+gtk4 = "*"
+
+[package.metadata.generate-rpm.recommends]
+pulseaudio-utils = "*"
+wl-clipboard = "*"

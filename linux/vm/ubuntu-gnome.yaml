@@ -1,0 +1,41 @@
+# Ubuntu 24.04 desktop (GNOME, Wayland) to try Notch for real.
+#   limactl start --name notch-ubuntu linux/vm/ubuntu-gnome.yaml
+# The desktop opens in a window on the Mac (vz display).
+base: template://ubuntu-24.04
+vmType: vz
+cpus: 4
+memory: 6GiB
+disk: 40GiB
+video:
+  display: vz
+mounts:
+  - location: "~"
+  - location: "/tmp/lima"
+    writable: true
+provision:
+  - mode: system
+    script: |
+      #!/bin/sh
+      set -e
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y --no-install-recommends ubuntu-desktop-minimal gdm3 gnome-terminal \
+        libgtk-4-1 pulseaudio-utils wl-clipboard \
+        mpv playerctl gnome-screenshot network-manager bluez fonts-noto-core fonts-thai-tlwg
+      # log the Lima user straight into a GNOME Wayland session
+      u=$(getent passwd 1000 | cut -d: -f1 || true)
+      [ -n "$u" ] || u={{.User}}
+      mkdir -p /etc/gdm3
+      cat > /etc/gdm3/custom.conf <<CONF
+      [daemon]
+      AutomaticLoginEnable=true
+      AutomaticLogin={{.User}}
+      WaylandEnable=true
+      CONF
+      systemctl set-default graphical.target
+      # no screen lock / blanking while testing
+      mkdir -p /etc/dconf/db/local.d /etc/dconf/profile
+      printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user
+      printf '[org/gnome/desktop/session]\nidle-delay=uint32 0\n[org/gnome/desktop/screensaver]\nlock-enabled=false\n' > /etc/dconf/db/local.d/00-notch-test
+      dconf update || true
+      systemctl restart gdm3 || systemctl start gdm3 || true

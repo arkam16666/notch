@@ -1,8 +1,9 @@
 //! Real plan usage (% of the 5-hour and weekly limits), the same numbers as
 //! Claude Code's `/usage`.
 //!
-//! Reads Claude Code's own OAuth login from the macOS Keychain
-//! ("Claude Code-credentials"; macOS asks the user the first time) and asks
+//! Reads Claude Code's own OAuth login — from the macOS Keychain ("Claude
+//! Code-credentials"; macOS asks the user the first time), or on Linux from
+//! ~/.claude/.credentials.json where Claude Code keeps it — and asks
 //! api.anthropic.com for the usage. The token is only ever sent to
 //! api.anthropic.com (via curl's stdin config, so it never shows up in the
 //! process list) and is never logged or written anywhere.
@@ -10,16 +11,12 @@
 //! This endpoint isn't a documented public API — if it changes, the weekly
 //! bar just shows an error instead of a number.
 
-use std::ffi::c_void;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
-use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2_foundation::{NSData, NSDictionary, NSNumber, NSString};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Limit {
@@ -34,49 +31,74 @@ pub struct Limits {
     pub week: Option<Limit>,
 }
 
-#[link(name = "Security", kind = "framework")]
-unsafe extern "C" {
-    static kSecClass: *const c_void;
-    static kSecClassGenericPassword: *const c_void;
-    static kSecAttrService: *const c_void;
-    static kSecReturnData: *const c_void;
-    static kSecMatchLimit: *const c_void;
-    static kSecMatchLimitOne: *const c_void;
-    fn SecItemCopyMatching(query: *const c_void, result: *mut *const c_void) -> i32;
+/// The credentials JSON Claude Code saves in ~/.claude (Linux; some macOS
+/// setups too).
+fn credentials_file() -> Option<Vec<u8>> {
+    let path = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude/.credentials.json"))?;
+    std::fs::read(path).ok()
 }
 
-fn cf<'a>(p: *const c_void) -> &'a AnyObject {
-    unsafe { &*(p as *const AnyObject) }
+#[cfg(target_os = "macos")]
+mod keychain {
+    use std::ffi::c_void;
+
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSData, NSDictionary, NSNumber, NSString};
+
+    #[link(name = "Security", kind = "framework")]
+    unsafe extern "C" {
+        static kSecClass: *const c_void;
+        static kSecClassGenericPassword: *const c_void;
+        static kSecAttrService: *const c_void;
+        static kSecReturnData: *const c_void;
+        static kSecMatchLimit: *const c_void;
+        static kSecMatchLimitOne: *const c_void;
+        fn SecItemCopyMatching(query: *const c_void, result: *mut *const c_void) -> i32;
+    }
+
+    fn cf<'a>(p: *const c_void) -> &'a AnyObject {
+        unsafe { &*(p as *const AnyObject) }
+    }
+
+    /// Ok(json) / Err(OSStatus)
+    pub fn read() -> Result<Vec<u8>, i32> {
+        unsafe {
+            let keys: [&NSString; 4] = [
+                &*(kSecClass as *const NSString),
+                &*(kSecAttrService as *const NSString),
+                &*(kSecReturnData as *const NSString),
+                &*(kSecMatchLimit as *const NSString),
+            ];
+            let service = NSString::from_str("Claude Code-credentials");
+            let yes = NSNumber::new_bool(true);
+            let vals: [&AnyObject; 4] = [cf(kSecClassGenericPassword), &service, &yes, cf(kSecMatchLimitOne)];
+            let query = NSDictionary::from_slices(&keys, &vals);
+            let mut out: *const c_void = std::ptr::null();
+            let status = SecItemCopyMatching(Retained::as_ptr(&query).cast(), &mut out);
+            if status == 0 && !out.is_null() {
+                if let Some(data) = Retained::from_raw(out as *mut NSData) {
+                    return Ok(data.to_vec());
+                }
+            }
+            Err(status)
+        }
+    }
 }
 
 /// Claude Code's OAuth access token (Keychain, or ~/.claude/.credentials.json).
 fn access_token() -> Result<String, String> {
-    let json: Vec<u8> = unsafe {
-        let keys: [&NSString; 4] = [
-            &*(kSecClass as *const NSString),
-            &*(kSecAttrService as *const NSString),
-            &*(kSecReturnData as *const NSString),
-            &*(kSecMatchLimit as *const NSString),
-        ];
-        let service = NSString::from_str("Claude Code-credentials");
-        let yes = NSNumber::new_bool(true);
-        let vals: [&AnyObject; 4] = [cf(kSecClassGenericPassword), &service, &yes, cf(kSecMatchLimitOne)];
-        let query = NSDictionary::from_slices(&keys, &vals);
-        let mut out: *const c_void = std::ptr::null();
-        let status = SecItemCopyMatching(Retained::as_ptr(&query).cast(), &mut out);
-        if status == 0 && !out.is_null() {
-            let data: Retained<NSData> = Retained::from_raw(out as *mut NSData).ok_or("keychain")?;
-            data.to_vec()
-        } else {
-            // some setups keep it in a file instead
-            let path = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".claude/.credentials.json"));
-            match path.and_then(|p| std::fs::read(p).ok()) {
-                Some(b) => b,
-                None if status == -128 => return Err("ไม่ได้อนุญาตให้อ่าน login ของ Claude Code".into()),
-                None => return Err("ไม่พบ login ของ Claude Code (ลอง login ใน Claude Code)".into()),
-            }
-        }
+    #[cfg(target_os = "macos")]
+    let json: Vec<u8> = match keychain::read() {
+        Ok(j) => j,
+        Err(status) => match credentials_file() {
+            Some(b) => b,
+            None if status == -128 => return Err("ไม่ได้อนุญาตให้อ่าน login ของ Claude Code".into()),
+            None => return Err("ไม่พบ login ของ Claude Code (ลอง login ใน Claude Code)".into()),
+        },
     };
+    #[cfg(not(target_os = "macos"))]
+    let json: Vec<u8> = credentials_file().ok_or("ไม่พบ login ของ Claude Code (ลอง login ใน Claude Code)")?;
     let v: serde_json::Value = serde_json::from_slice(&json).map_err(|_| "อ่าน login ไม่ได้".to_string())?;
     let o = &v["claudeAiOauth"];
     if let Some(exp) = o["expiresAt"].as_i64() {

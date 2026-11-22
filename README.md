@@ -55,14 +55,23 @@ Dynamic Island สำหรับ MacBook ที่มี notch — เขีย
 - ลากไฟล์มาที่ notch → พักไว้ในชั้นวาง หรือส่ง AirDrop
 - มุมขวาบนตอนขยาย: CPU · RAM · อุณหภูมิ · แบต
 
+## Linux
+
+มีเวอร์ชัน Linux ด้วย (Debian/Ubuntu, Fedora/RHEL, Arch …) — เพลงจากทุกตัวเล่น + เลือกลำโพง, Claude, ตัวจับเวลา, คลิปบอร์ด, Wi-Fi / Bluetooth, แถบเสียง/แบต, ขอบไฟ RGB, หน้าตั้งค่า → ดู [linux/README.md](linux/README.md)
+
+<p align="center"><img src="docs/screenshots/linux/wayland-real.png" width="520" alt="Notch บน Linux (Wayland)"></p>
+
 ## ติดตั้ง
 
-ต้องมี: MacBook ที่มี notch (เครื่องอื่นจะวาด notch ปลอมให้), macOS 14.2+, [Rust](https://rustup.rs)
+ตัวติดตั้งตัวเดียว เลือก **macOS** หรือ **Linux** ได้ (ตรวจเครื่องให้อัตโนมัติ):
 
 ```sh
-git clone <repo> notch && cd notch
-./scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/arkam16666/notch/main/install.sh | sh
 ```
+
+หรือจากโฟลเดอร์โปรเจกต์: `./install.sh` (`--mac` / `--linux` เพื่อข้ามคำถาม) — ถ้ายังไม่มี Rust หรือไลบรารีที่ต้องใช้ (Linux) จะถามแล้วลงให้
+
+- **macOS**: MacBook ที่มี notch (เครื่องอื่นจะวาด notch ปลอมให้), macOS 14.2+
 
 ตัวติดตั้งจะ build แล้วลง `/Applications/Notch.app`, ตั้ง hooks ของ Claude Code (ถ้ามี), ตั้งให้เปิดเองตอนเข้าเครื่อง แล้วเปิดแอปให้ — รันซ้ำเพื่ออัปเดต
 

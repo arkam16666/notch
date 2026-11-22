@@ -1,0 +1,6 @@
+# Wayland test image + PulseAudio, NetworkManager / BlueZ clients and
+# dbusmock, to exercise Wi-Fi / Bluetooth / speaker code against mocks.
+FROM notch-wayland-test
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pulseaudio network-manager bluez python3-dbusmock \
+ && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,11 @@
+# Build for Ubuntu 24.04 (glibc 2.39, GTK 4.14) — the .deb also suits
+# Mint 22 / Pop!_OS 24.04 / Zorin 18.
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates build-essential pkg-config \
+      libgtk-4-dev libgtk4-layer-shell-dev libdbus-1-dev dpkg-dev \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+ENV PATH=/root/.cargo/bin:$PATH
+RUN cargo install cargo-deb
+WORKDIR /src

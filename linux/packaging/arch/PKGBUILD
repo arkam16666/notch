@@ -1,0 +1,26 @@
+# Arch Linux / Manjaro / EndeavourOS: makepkg -si (inside this folder)
+pkgname=notch-island
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Dynamic Island for the Linux desktop: music, Claude Code, timer, clipboard"
+arch=('x86_64' 'aarch64')
+url="https://github.com/arkam16666/notch"
+license=('MIT')
+depends=('gtk4' 'gtk4-layer-shell')
+optdepends=('libpulse: volume banner (pactl)' 'wl-clipboard: clipboard history on Wayland')
+makedepends=('cargo' 'git')
+source=("git+https://github.com/arkam16666/notch.git")
+sha256sums=('SKIP')
+
+build() {
+  cd notch/linux
+  cargo build --release --locked
+}
+
+package() {
+  cd notch/linux
+  install -Dm755 target/release/notch "$pkgdir/usr/bin/notch"
+  install -Dm644 packaging/notch.desktop "$pkgdir/usr/share/applications/notch.desktop"
+  install -Dm644 packaging/notch-autostart.desktop "$pkgdir/etc/xdg/autostart/notch.desktop"
+  install -Dm644 ../docs/icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/notch.png"
+}

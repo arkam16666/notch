@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Notch
+GenericName=Dynamic Island
+Comment=Music, Claude Code, timer and clipboard at the top of your screen
+Exec=notch
+Icon=notch
+Terminal=false
+Categories=Utility;AudioVideo;
+StartupNotify=false
+Actions=Settings;
+
+[Desktop Action Settings]
+Name=ตั้งค่า Notch
+Exec=notch --settings

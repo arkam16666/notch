@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Notch
+Comment=Dynamic Island at the top of the screen
+Exec=notch
+Icon=notch
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

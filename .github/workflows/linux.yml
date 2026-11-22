@@ -1,0 +1,74 @@
+# Linux packages: .deb (Debian / Ubuntu / Mint / Pop!_OS…) and .rpm
+# (Fedora / RHEL-family / openSUSE), for x86_64 and arm64.
+# Runs on every push to main that touches linux/ (artifacts) and on tags
+# v* (attached to the GitHub release).
+name: linux
+
+on:
+  push:
+    branches: [main]
+    paths: ["linux/**", "src/status.rs", "src/claude_api.rs", "src/config.rs", ".github/workflows/linux.yml"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deb:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libdbus-1-dev pkg-config meson ninja-build libwayland-dev wayland-protocols
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: linux }
+      - name: Build
+        working-directory: linux
+        # gtk4-layer-shell built in statically (Ubuntu 24.04 has no package)
+        run: . ./build-layer-shell.sh && cargo build --release
+      - name: Package
+        working-directory: linux
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.runner }}
+          path: linux/target/debian/*.deb
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with: { files: linux/target/debian/*.deb }
+
+  rpm:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    container: fedora:latest
+    steps:
+      - name: Dependencies
+        run: dnf install -y gcc git pkgconf-pkg-config gtk4-devel dbus-devel meson ninja-build wayland-devel wayland-protocols-devel
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        working-directory: linux
+        run: . ./build-layer-shell.sh && cargo build --release
+      - name: Package
+        working-directory: linux
+        run: |
+          cargo install cargo-generate-rpm --locked
+          cargo generate-rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.runner }}
+          path: linux/target/generate-rpm/*.rpm
+      - if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with: { files: linux/target/generate-rpm/*.rpm }
