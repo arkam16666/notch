@@ -19,7 +19,12 @@ use std::time::Duration;
 pub struct Controls {
     pub wifi: bool,
     pub wifi_connected: bool,
+    /// name of the connected network (needs Location permission; None
+    /// without it — macOS hides network names from apps then)
+    pub wifi_ssid: Option<String>,
     pub bluetooth: Option<bool>,
+    /// connected device(s) for the tile: "AirPods Pro" / "AirPods Pro +1"
+    pub bt_device: Option<String>,
     pub dark: bool,
     /// (percent, charging)
     pub battery: Option<(u8, bool)>,
@@ -133,10 +138,38 @@ pub fn parse_battery(s: &str) -> Option<(u8, bool)> {
     Some((pct, charging))
 }
 
+/// Name of the connected Bluetooth device (headphones / speakers first),
+/// plus how many more are connected.
+fn bt_connected() -> Option<String> {
+    use objc2_io_bluetooth::IOBluetoothDevice;
+    let arr = unsafe { IOBluetoothDevice::pairedDevices() }?;
+    let mut devs: Vec<(bool, String)> = arr
+        .iter()
+        .filter_map(|o| o.downcast::<IOBluetoothDevice>().ok())
+        .filter(|d| unsafe { d.isConnected() })
+        .map(|d| unsafe {
+            let audio = d.deviceClassMajor() == 0x04;
+            (audio, d.nameOrAddress().map(|s| s.to_string()).unwrap_or_else(|| "อุปกรณ์".into()))
+        })
+        .collect();
+    devs.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let (_, first) = devs.first()?.clone();
+    Some(if devs.len() > 1 { format!("{first} +{}", devs.len() - 1) } else { first })
+}
+
 pub fn read() -> Controls {
+    let bluetooth = fns().get_bt.map(|f| f() != 0);
     let dev = wifi_device();
     let wifi = run("/usr/sbin/networksetup", &["-getairportpower", dev]).is_some_and(|s| s.trim().ends_with("On"));
     let wifi_connected = wifi && run("/usr/sbin/ipconfig", &["getifaddr", dev]).is_some_and(|s| !s.trim().is_empty());
+    let wifi_ssid = if wifi_connected {
+        unsafe { objc2_core_wlan::CWWiFiClient::sharedWiFiClient().interface() }
+            .and_then(|i| unsafe { i.ssid() })
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+    } else {
+        None
+    };
     let (volume, muted) = run("/usr/bin/osascript", &["-e", "get volume settings"])
         .map(|s| {
             let get = |k: &str| {
@@ -151,7 +184,9 @@ pub fn read() -> Controls {
     Controls {
         wifi,
         wifi_connected,
-        bluetooth: fns().get_bt.map(|f| f() != 0),
+        wifi_ssid,
+        bluetooth,
+        bt_device: if bluetooth == Some(true) { bt_connected() } else { None },
         dark: run("/usr/bin/defaults", &["read", "-g", "AppleInterfaceStyle"]).is_some_and(|s| s.trim() == "Dark"),
         battery: run("/usr/bin/pmset", &["-g", "batt"]).as_deref().and_then(parse_battery),
         volume,

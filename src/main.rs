@@ -46,7 +46,7 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSURL, NSAffineTransform, NSAttributedStringKey, NSData, NSDictionary, NSNumber,
     NSPoint, NSRect, NSSize, NSString, NSTimer,
 };
-use objc2_quartz_core::CAMediaTimingFunction;
+use objc2_quartz_core::{CABasicAnimation, CAGradientLayer, CALayer, CAMediaTiming, CAMediaTimingFunction, CAShapeLayer, CATransaction};
 // CLGeocoder is deprecated in favour of MapKit but still works and keeps us
 // off yet another framework; it's only used for the city name.
 #[allow(deprecated)]
@@ -539,6 +539,12 @@ struct State {
     last_volume: Option<(f32, bool)>,
     last_brightness: Option<f64>,
     hud_poll: u32,
+    /// RGB border: (container masked to a ring, the ring mask, rotating rainbow)
+    border: Option<GlowLayers>,
+    /// screen-edge glow: a click-through window over the whole display
+    edge: Option<(Retained<NSWindow>, Vec<GlowLayers>)>,
+    /// style+colour currently on the border layer (to skip re-setting it)
+    border_key: String,
     timer: Option<Timer>,
     /// last preset used (minutes) — what ▶ starts with
     timer_last: u32,
@@ -798,13 +804,18 @@ define_class!(
             };
             menu.addItem(&item("ตั้งค่า Notch…", sel!(openSettings:), Some(self)));
             menu.addItem(&NSMenuItem::separatorItem(mtm));
-            menu.addItem(&item("ออกจาก Notch", sel!(terminate:), None));
+            menu.addItem(&item("ออกจาก Notch", sel!(quitApp:), Some(self)));
             NSMenu::popUpContextMenu_withEvent_forView(&menu, event, self);
+        }
+
+        #[unsafe(method(quitApp:))]
+        fn quit_app_action(&self, _sender: Option<&AnyObject>) {
+            settings::quit_app(self.mtm());
         }
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
-            open_settings_app();
+            settings::show(self.mtm());
         }
 
         #[unsafe(method(mouseMoved:))]
@@ -1528,6 +1539,54 @@ fn tab_rects(notch_h: f64) -> Vec<(Page, NSRect)> {
         .collect()
 }
 
+/// A colour ring: `container` (masked to `ring`, an even-odd path) holding a
+/// big conic gradient `grad` that spins forever on the GPU.
+type GlowLayers = (Retained<CALayer>, Retained<CAShapeLayer>, Retained<CAGradientLayer>);
+
+fn glow_layers() -> GlowLayers {
+    let container = CALayer::new();
+    let ring = CAShapeLayer::new();
+    unsafe { ring.setFillRule(objc2_quartz_core::kCAFillRuleEvenOdd) };
+    ring.setFillColor(Some(&NSColor::blackColor().CGColor()));
+    unsafe { container.setMask(Some(&ring)) };
+    let grad = CAGradientLayer::new();
+    unsafe { grad.setType(objc2_quartz_core::kCAGradientLayerConic) };
+    grad.setStartPoint(NSPoint::new(0.5, 0.5).into());
+    grad.setEndPoint(NSPoint::new(0.5, 0.0).into());
+    grad.setBounds(rect(0.0, 0.0, 4000.0, 4000.0).into());
+    let spin = CABasicAnimation::animationWithKeyPath(Some(&NSString::from_str("transform.rotation.z")));
+    unsafe {
+        spin.setFromValue(Some(&NSNumber::new_f64(0.0)));
+        spin.setToValue(Some(&NSNumber::new_f64(2.0 * PI)));
+    }
+    spin.setDuration(5.0);
+    spin.setRepeatCount(f32::INFINITY);
+    spin.setRemovedOnCompletion(false);
+    grad.addAnimation_forKey(&spin, Some(&NSString::from_str("spin")));
+    container.addSublayer(&grad);
+    (container, ring, grad)
+}
+
+/// Screen-edge glow rings: (inset width, opacity) — a crisp line plus two
+/// soft, fading bands inside it.
+const EDGE_RINGS: [(f64, f32); 3] = [(3.5, 1.0), (10.0, 0.28), (24.0, 0.1)];
+
+/// Width of the RGB border ring.
+const BORDER_W: f64 = 2.5;
+
+/// The border ring: the island outline minus the same outline inset by
+/// BORDER_W on the sides and bottom (the top stays open — it's the screen
+/// edge). Filled even-odd.
+fn border_ring(w: f64, h: f64, radius: f64) -> Retained<NSBezierPath> {
+    let outer = island_path(w, h, radius);
+    let inner = island_path(w - 2.0 * BORDER_W, h - BORDER_W, (radius - BORDER_W).max(1.0));
+    let t = NSAffineTransform::transform();
+    t.translateXBy_yBy(BORDER_W, 0.0);
+    inner.transformUsingAffineTransform(&t);
+    outer.appendBezierPath(&inner);
+    outer
+}
+
 /// Island outline (flipped coords): flat top with concave "ears" flaring
 /// into the screen edge, rounded bottom corners.
 fn island_path(w: f64, h: f64, radius: f64) -> Retained<NSBezierPath> {
@@ -1747,6 +1806,149 @@ impl NotchView {
             w,
             h,
         )
+    }
+
+    /// Create the RGB border layers (once). The rainbow turns on the GPU via
+    /// a Core Animation rotation, so it costs no redraws.
+    fn install_border(&self) {
+        self.setWantsLayer(true);
+        let Some(host) = self.layer() else { return };
+        let (container, ring, grad) = glow_layers();
+        // the ring path is in the view's flipped (y-down) coordinates
+        container.setGeometryFlipped(!host.isGeometryFlipped());
+        host.addSublayer(&container);
+        self.ivars().state.borrow_mut().border = Some((container, ring, grad));
+    }
+
+    /// The click-through window that lights up the screen's edges.
+    fn make_edge_window(&self) -> (Retained<NSWindow>, Vec<GlowLayers>) {
+        let mtm = self.mtm();
+        let screen = self.ivars().state.borrow().geo.screen;
+        let win = unsafe {
+            NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm),
+                screen,
+                NSWindowStyleMask::Borderless,
+                NSBackingStoreType::Buffered,
+                false,
+            )
+        };
+        unsafe { win.setReleasedWhenClosed(false) };
+        win.setLevel(25); // above the menu bar, just under the island (26)
+        win.setOpaque(false);
+        win.setBackgroundColor(Some(&NSColor::clearColor()));
+        win.setHasShadow(false);
+        win.setIgnoresMouseEvents(true);
+        win.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        let view = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, screen.size.width, screen.size.height));
+        view.setWantsLayer(true);
+        let mut rings = Vec::new();
+        if let Some(host) = view.layer() {
+            let (w, h) = (screen.size.width, screen.size.height);
+            // display corners are rounded (~10 pt)
+            let corner = 10.0;
+            for (inset, alpha) in EDGE_RINGS {
+                let layers = glow_layers();
+                let (container, ring, grad) = &layers;
+                container.setFrame(rect(0.0, 0.0, w, h).into());
+                container.setOpacity(alpha);
+                ring.setFrame(rect(0.0, 0.0, w, h).into());
+                let path = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect(0.0, 0.0, w, h), corner, corner);
+                let r_in = (corner - inset).max(2.0);
+                path.appendBezierPath(&NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                    rect(inset, inset, w - 2.0 * inset, h - 2.0 * inset),
+                    r_in,
+                    r_in,
+                ));
+                ring.setPath(Some(&path.CGPath()));
+                grad.setPosition(NSPoint::new(w / 2.0, h / 2.0).into());
+                host.addSublayer(container);
+                rings.push(layers);
+            }
+        }
+        win.setContentView(Some(&view));
+        (win, rings)
+    }
+
+    /// Fit the border to the island's current shape and colours (called
+    /// from draw). Only on the open island: it fades in as it expands.
+    fn update_border(&self, full_w: f64, h: f64, radius: f64, t: f64, accent: (f64, f64, f64)) {
+        let cfg = config::get();
+        let fade = ((t - 0.3) / 0.6).clamp(0.0, 1.0);
+        let screen_edge = cfg.border_scope == "screen";
+        let want_edge = cfg.rgb_border && screen_edge && fade > 0.0;
+        if want_edge && self.ivars().state.borrow().edge.is_none() {
+            let e = self.make_edge_window();
+            let mut st = self.ivars().state.borrow_mut();
+            st.edge = Some(e);
+            st.border_key.clear(); // give the new rings their colours
+        }
+        let mut st = self.ivars().state.borrow_mut();
+        let Some((container, ring, grad)) = st.border.clone() else { return };
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        // screen edges: fade the whole window with the island
+        if let Some((win, _)) = &st.edge {
+            if want_edge {
+                win.setAlphaValue(fade);
+                if !win.isVisible() {
+                    win.orderFrontRegardless();
+                }
+            } else if win.isVisible() {
+                win.orderOut(None);
+            }
+        }
+        let on = cfg.rgb_border && !screen_edge && fade > 0.0;
+        container.setHidden(!on);
+        container.setOpacity(fade as f32);
+        if on || want_edge {
+            let key = match cfg.border_style.as_str() {
+                "artwork" => format!("artwork{accent:?}"),
+                "solid" => format!("solid{}", cfg.border_color),
+                _ => "rainbow".to_string(),
+            };
+            if key != st.border_key {
+                let lighten = |(r, g, b): (f64, f64, f64), k: f64| (r + (1.0 - r) * k, g + (1.0 - g) * k, b + (1.0 - b) * k);
+                let cols: Vec<(f64, f64, f64)> = match cfg.border_style.as_str() {
+                    // the cover's colour with a light glint running round
+                    "artwork" => {
+                        let a = lighten(accent, 0.15);
+                        vec![a, a, lighten(accent, 0.7), a, a, lighten(accent, 0.45), a]
+                    }
+                    "solid" => {
+                        let c = config::parse_hex(&cfg.border_color).unwrap_or((1.0, 0.31, 0.85));
+                        vec![c, c, lighten(c, 0.6), c, c]
+                    }
+                    _ => (0..=12)
+                        .map(|i| {
+                            let c = NSColor::colorWithHue_saturation_brightness_alpha((i % 12) as f64 / 12.0, 0.85, 1.0, 1.0);
+                            (c.redComponent(), c.greenComponent(), c.blueComponent())
+                        })
+                        .collect(),
+                };
+                let cg: Vec<_> = cols.iter().map(|c| rgb(*c, 1.0).CGColor()).collect();
+                let objs: Vec<&AnyObject> = cg.iter().map(|c| unsafe { &*(Retained::as_ptr(c) as *const AnyObject) }).collect();
+                let arr = NSArray::from_slice(&objs);
+                unsafe { grad.setColors(Some(&arr)) };
+                if let Some((_, rings)) = &st.edge {
+                    for (_, _, g) in rings {
+                        unsafe { g.setColors(Some(&arr)) };
+                    }
+                }
+                st.border_key = key;
+            }
+            let b = self.bounds();
+            container.setFrame(b.into());
+            ring.setFrame(rect(0.0, 0.0, b.size.width, b.size.height).into());
+            ring.setPath(Some(&border_ring(full_w, h, radius).CGPath()));
+            grad.setPosition(NSPoint::new(b.size.width / 2.0, b.size.height / 2.0).into());
+        }
+        CATransaction::commit();
     }
 
     fn relayout(&self) {
@@ -2795,10 +2997,12 @@ impl NotchView {
             Ctl::Wifi => {
                 c.wifi = !c.wifi;
                 c.wifi_connected = false;
+                c.wifi_ssid = None;
                 Some(Action::Wifi(c.wifi))
             }
             Ctl::Bluetooth => c.bluetooth.as_mut().map(|b| {
                 *b = !*b;
+                c.bt_device = None;
                 Action::Bluetooth(*b)
             }),
             Ctl::Dark => {
@@ -2867,16 +3071,24 @@ impl NotchView {
         let mut show_pw = false;
         let mut answer_arrived = false;
         let mut spin_dirty = false;
-        // settings app: pick up config changes / quit request (~1×/s)
+        // settings window: pick up config changes (~1×/s)
         let config_tick = self.ivars().state.borrow().hud_poll % 30 == 0;
         if config_tick {
-            if let Some(q) = settings::quit_flag().filter(|q| q.exists()) {
-                let _ = std::fs::remove_file(q);
-                NSApplication::sharedApplication(self.mtm()).terminate(None);
-                return;
-            }
             if config::reload_if_changed() {
                 let cfg = config::get();
+                // "เปิดใช้ notch" switch: hide / show the island (app keeps running)
+                let win = self.ivars().state.borrow().window.clone();
+                if let Some(win) = win {
+                    if cfg.notch_enabled && !win.isVisible() {
+                        win.orderFrontRegardless();
+                    } else if !cfg.notch_enabled && win.isVisible() {
+                        self.set_expanded(false);
+                        win.orderOut(None);
+                        if let Some((edge, _)) = &self.ivars().state.borrow().edge {
+                            edge.orderOut(None);
+                        }
+                    }
+                }
                 let mut st = self.ivars().state.borrow_mut();
                 if !cfg.claude_status {
                     st.sessions.clear();
@@ -3420,6 +3632,7 @@ impl NotchView {
 
         // ----- body -----
         let body = island_path(full_w, h, radius);
+        self.update_border(full_w, h, radius, t, f.accent);
         NSColor::blackColor().setFill();
         body.fill();
 
@@ -4582,17 +4795,21 @@ impl NotchView {
                 Ctl::Wifi => (
                     c.wifi,
                     if c.wifi { "wifi" } else { "wifi.slash" }.into(),
-                    if !c.wifi { "Wi-Fi ปิด" } else if c.wifi_connected { "Wi-Fi" } else { "ไม่ได้เชื่อมต่อ" }.into(),
+                    match (&c.wifi_ssid, c.wifi, c.wifi_connected) {
+                        (_, false, _) => "Wi-Fi ปิด".into(),
+                        (Some(name), _, true) => name.clone(),
+                        (None, _, true) => "Wi-Fi".into(),
+                        _ => "ไม่ได้เชื่อมต่อ".into(),
+                    },
                 ),
                 Ctl::Bluetooth => (
                     c.bluetooth == Some(true),
                     "dot.radiowaves.left.and.right".into(),
-                    match c.bluetooth {
-                        Some(true) => "Bluetooth",
-                        Some(false) => "Bluetooth ปิด",
-                        None => "Bluetooth",
-                    }
-                    .into(),
+                    match (c.bluetooth, &c.bt_device) {
+                        (Some(true), Some(name)) => name.clone(),
+                        (Some(false), _) => "Bluetooth ปิด".into(),
+                        _ => "Bluetooth".into(),
+                    },
                 ),
                 Ctl::Dark => (c.dark, "moon.fill".into(), if c.dark { "โหมดมืด" } else { "โหมดสว่าง" }.into()),
                 Ctl::Mirror => (
@@ -5227,7 +5444,19 @@ fn snapshot(mtm: MainThreadMarker, dir: &str) {
         .unwrap();
     let (controls_tx, controls_rx) = mpsc::channel();
     let (action_tx, _action_rx) = mpsc::channel();
-    controls_tx.send(controls::read()).unwrap();
+    let mut c = controls::read();
+    if std::env::var_os("NOTCH_DEMO").is_some() {
+        // never put the real network name in published screenshots
+        c.wifi = true;
+        c.wifi_connected = true;
+        c.wifi_ssid = Some("Home 5G".into());
+        c.bluetooth = Some(true);
+        c.bt_device = Some("AirPods Pro".into());
+        c.volume = 0.45;
+        c.muted = false;
+        c.brightness = Some(0.6);
+    }
+    controls_tx.send(c).unwrap();
     let (req_tx, _req_rx) = mpsc::channel();
     let (_resp_tx, resp_rx) = mpsc::channel();
     let (wx_tx, _wx_req_rx) = mpsc::channel();
@@ -5238,6 +5467,7 @@ fn snapshot(mtm: MainThreadMarker, dir: &str) {
         mtm,
         new_state(detect_geometry(mtm), cmd_tx, msg_rx, usage_rx, status_rx, controls_rx, action_tx, req_tx, resp_rx, wx_tx, wx_rx, privacy_rx, sys_rx, limits_rx, limits_poke, ask_tx, ask_rx),
     );
+    view.install_border();
     view.tick();
     if demo {
         let art = demo_artwork();
@@ -5424,6 +5654,22 @@ fn snapshot(mtm: MainThreadMarker, dir: &str) {
         let b = view.bounds();
         let Some(rep) = view.bitmapImageRepForCachingDisplayInRect(b) else { continue };
         view.cacheDisplayInRect_toBitmapImageRep(b, &rep);
+        // the RGB border is a Core Animation layer (not drawn by drawRect):
+        // composite it on top so the screenshots show it
+        let border = view.ivars().state.borrow().border.clone();
+        if let (Some((container, ..)), true) = (border, config::get().rgb_border) {
+            if let Some(ctx) = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep) {
+                NSGraphicsContext::saveGraphicsState_class();
+                NSGraphicsContext::setCurrentContext(Some(&ctx));
+                let cg = ctx.CGContext();
+                // the bitmap is y-up; the view (and so the layer geometry) is y-down
+                objc2_core_graphics::CGContext::translate_ctm(Some(&cg), 0.0, b.size.height);
+                objc2_core_graphics::CGContext::scale_ctm(Some(&cg), 1.0, -1.0);
+                container.renderInContext(&cg);
+                ctx.flushGraphics();
+                NSGraphicsContext::restoreGraphicsState_class();
+            }
+        }
         let data = unsafe {
             rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
         };
@@ -5431,6 +5677,37 @@ fn snapshot(mtm: MainThreadMarker, dir: &str) {
             let path = format!("{dir}/{name}.png");
             std::fs::write(&path, d.to_vec()).unwrap();
             println!("wrote {path}");
+        }
+    }
+    // the screen-edge glow (its own window) as edge.png, for a look
+    {
+        let (win, rings) = view.make_edge_window();
+        let colors: Vec<_> = (0..=12)
+            .map(|i| NSColor::colorWithHue_saturation_brightness_alpha((i % 12) as f64 / 12.0, 0.85, 1.0, 1.0).CGColor())
+            .collect();
+        let objs: Vec<&AnyObject> = colors.iter().map(|c| unsafe { &*(Retained::as_ptr(c) as *const AnyObject) }).collect();
+        let arr = NSArray::from_slice(&objs);
+        for (_, _, g) in &rings {
+            unsafe { g.setColors(Some(&arr)) };
+        }
+        if let (Some(cv), Some(rep)) = (
+            win.contentView(),
+            win.contentView().and_then(|v| v.bitmapImageRepForCachingDisplayInRect(v.bounds())),
+        ) {
+            if let (Some(ctx), Some(layer)) = (NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep), cv.layer()) {
+                NSGraphicsContext::saveGraphicsState_class();
+                NSGraphicsContext::setCurrentContext(Some(&ctx));
+                NSColor::colorWithWhite_alpha(0.12, 1.0).setFill();
+                NSBezierPath::fillRect(cv.bounds());
+                layer.renderInContext(&ctx.CGContext());
+                ctx.flushGraphics();
+                NSGraphicsContext::restoreGraphicsState_class();
+                if let Some(d) = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) } {
+                    let path = format!("{dir}/edge.png");
+                    std::fs::write(&path, d.to_vec()).unwrap();
+                    println!("wrote {path}");
+                }
+            }
         }
     }
 }
@@ -5556,6 +5833,9 @@ fn new_state(
         last_volume: audio::output_volume(),
         last_brightness: controls::brightness(),
         hud_poll: 0,
+        border: None,
+        edge: None,
+        border_key: String::new(),
         timer: None,
         timer_last: 25,
         timer_shown: -1,
@@ -5586,33 +5866,12 @@ fn new_state(
     }
 }
 
-/// Open "Notch Settings.app" if it's installed next to us, otherwise run this
-/// same binary in settings mode.
-fn open_settings_app() {
-    let exe = std::env::current_exe().ok();
-    // …/Notch.app/Contents/MacOS/notch → …/Notch Settings.app
-    let bundled = exe
-        .as_ref()
-        .and_then(|e| e.ancestors().nth(4).map(|d| d.join("Notch Settings.app")))
-        .filter(|p| p.exists());
-    let ok = match bundled {
-        Some(app) => std::process::Command::new("/usr/bin/open").arg(app).status().is_ok_and(|s| s.success()),
-        None => false,
-    };
-    if !ok {
-        if let Some(e) = exe {
-            let _ = std::process::Command::new(e).arg("--settings").spawn();
-        }
-    }
-}
-
 fn main() {
     // `notch --hook <Event>`: called by Claude Code hooks (see status.rs).
     let args: Vec<String> = std::env::args().collect();
-    // Settings app: `Notch Settings.app` (binary `notch-settings`) or `notch --settings`
-    let exe_name = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    if exe_name.as_deref() == Some("notch-settings") || args.iter().any(|a| a == "--settings") {
-        return settings::run(MainThreadMarker::new().unwrap());
+    if let Some(i) = args.iter().position(|a| a == "--make-icon") {
+        let _mtm = MainThreadMarker::new().unwrap();
+        return make_icon(args.get(i + 1).map(String::as_str).unwrap_or("."));
     }
     if let Some(i) = args.iter().position(|a| a == "--settings-snapshot") {
         let path = args.get(i + 1).map(String::as_str).unwrap_or("settings.png");
@@ -5642,6 +5901,7 @@ fn main() {
     }
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    settings::install(mtm);
 
     let (cmd_tx, cmd_rx) = mpsc::channel();
     let (msg_tx, msg_rx) = mpsc::channel();
@@ -5687,6 +5947,7 @@ fn main() {
     let panel: Retained<NSPanel> = Retained::into_super(panel);
     // Location permission → Wi-Fi network names (only works inside Notch.app)
     view.ivars().state.borrow_mut().location = Some(unsafe { CLLocationManager::new() });
+    view.install_border();
     unsafe { panel.setReleasedWhenClosed(false) };
     panel.setLevel(26); // above the menu bar (NSMainMenuWindowLevel = 24)
     panel.setCollectionBehavior(
@@ -5703,7 +5964,9 @@ fn main() {
     panel.setAcceptsMouseMovedEvents(true);
     panel.setContentView(Some(&view));
     view.ivars().state.borrow_mut().window = Some(panel.clone());
-    panel.orderFrontRegardless();
+    if config::get().notch_enabled {
+        panel.orderFrontRegardless();
+    }
 
     power::watch();
 
@@ -5730,4 +5993,134 @@ fn main() {
         unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(1.0 / 30.0, true, &block) };
 
     app.run();
+}
+
+/// `notch --make-icon DIR`: draw the app icon into DIR/AppIcon.iconset
+/// (all sizes), ready for `iconutil -c icns`.
+///
+///   ┌──────────────────────┐   purple → blue squircle (like the music page)
+///   │   ███[▣  ▮▮▮▮]███    │   a black island with artwork + waveform bars
+///   │                      │
+///   └──────────────────────┘
+fn make_icon(dir: &str) {
+    let set = format!("{dir}/AppIcon.iconset");
+    std::fs::create_dir_all(&set).unwrap();
+    for (px, name) in [
+        (16, "icon_16x16"), (32, "icon_16x16@2x"), (32, "icon_32x32"), (64, "icon_32x32@2x"),
+        (128, "icon_128x128"), (256, "icon_128x128@2x"), (256, "icon_256x256"), (512, "icon_256x256@2x"),
+        (512, "icon_512x512"), (1024, "icon_512x512@2x"),
+    ] {
+        let rep = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(), std::ptr::null_mut(), px, px, 8, 4, true, false,
+                NSDeviceRGBColorSpace, px * 4, 32,
+            )
+        }
+        .unwrap();
+        let ctx = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep).unwrap();
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&ctx));
+        // draw on a 1024 grid (y up), scaled to this size
+        let t = NSAffineTransform::transform();
+        t.scaleBy(px as f64 / 1024.0);
+        t.concat();
+        draw_icon();
+        ctx.flushGraphics();
+        NSGraphicsContext::restoreGraphicsState_class();
+        let data = unsafe { rep.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new()) }.unwrap();
+        std::fs::write(format!("{set}/{name}.png"), data.to_vec()).unwrap();
+    }
+    println!("wrote {set}");
+}
+
+fn draw_icon() {
+    let grad = |a: (f64, f64, f64), b: (f64, f64, f64)| {
+        NSGradient::initWithStartingColor_endingColor(NSGradient::alloc(), &rgb(a, 1.0), &rgb(b, 1.0)).unwrap()
+    };
+    // macOS icon grid: 824×824 body, 100 pt margin, ~185 pt corners
+    let body = rect(100.0, 100.0, 824.0, 824.0);
+    let shape = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(body, 186.0, 186.0);
+
+    // soft drop shadow
+    NSGraphicsContext::saveGraphicsState_class();
+    let shadow = objc2_app_kit::NSShadow::new();
+    shadow.setShadowColor(Some(&NSColor::colorWithWhite_alpha(0.0, 0.35)));
+    shadow.setShadowBlurRadius(28.0);
+    shadow.setShadowOffset(NSSize::new(0.0, -12.0));
+    shadow.set();
+    NSColor::blackColor().setFill();
+    shape.fill();
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    // background: deep purple → indigo, with a warm glow at the bottom
+    NSGraphicsContext::saveGraphicsState_class();
+    shape.addClip();
+    grad((0.36, 0.16, 0.62), (0.10, 0.10, 0.32)).drawInRect_angle(body, -70.0);
+    if let Some(glow) = NSGradient::initWithStartingColor_endingColor(
+        NSGradient::alloc(),
+        &NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.35, 0.55, 0.55),
+        &NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.35, 0.55, 0.0),
+    ) {
+        glow.drawFromCenter_radius_toCenter_radius_options(
+            NSPoint::new(330.0, 160.0), 0.0, NSPoint::new(330.0, 160.0), 520.0,
+            NSGradientDrawingOptions::empty(),
+        );
+    }
+    if let Some(glow) = NSGradient::initWithStartingColor_endingColor(
+        NSGradient::alloc(),
+        &NSColor::colorWithSRGBRed_green_blue_alpha(0.35, 0.55, 1.0, 0.45),
+        &NSColor::colorWithSRGBRed_green_blue_alpha(0.35, 0.55, 1.0, 0.0),
+    ) {
+        glow.drawFromCenter_radius_toCenter_radius_options(
+            NSPoint::new(800.0, 330.0), 0.0, NSPoint::new(800.0, 330.0), 460.0,
+            NSGradientDrawingOptions::empty(),
+        );
+    }
+    // the island (black pill hanging from the top edge)
+    let island = rect(222.0, 610.0, 580.0, 300.0);
+    NSGraphicsContext::saveGraphicsState_class();
+    let s2 = objc2_app_kit::NSShadow::new();
+    s2.setShadowColor(Some(&NSColor::colorWithWhite_alpha(0.0, 0.6)));
+    s2.setShadowBlurRadius(40.0);
+    s2.setShadowOffset(NSSize::new(0.0, -14.0));
+    s2.set();
+    NSColor::blackColor().setFill();
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(island, 120.0, 120.0).fill();
+    NSGraphicsContext::restoreGraphicsState_class();
+    // square top so it merges with the screen edge
+    NSColor::blackColor().setFill();
+    NSBezierPath::fillRect(rect(island.origin.x, 790.0, island.size.width, 134.0));
+
+    // artwork tile on the left of the island
+    let art = rect(282.0, 652.0, 150.0, 150.0);
+    NSGraphicsContext::saveGraphicsState_class();
+    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(art, 34.0, 34.0).addClip();
+    grad((1.0, 0.42, 0.40), (0.62, 0.24, 0.95)).drawInRect_angle(art, -50.0);
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    // waveform bars on the right, purple → pink
+    let heights = [70.0, 128.0, 96.0, 150.0, 84.0];
+    let (bw, gap) = (30.0, 22.0);
+    let total = heights.len() as f64 * bw + (heights.len() - 1) as f64 * gap;
+    let x0 = 742.0 - total;
+    let cy = 727.0;
+    for (i, h) in heights.iter().enumerate() {
+        let k = i as f64 / (heights.len() - 1) as f64;
+        let col = (0.78 + 0.22 * k, 0.45 - 0.05 * k, 1.0 - 0.3 * k);
+        fill_round(rect(x0 + i as f64 * (bw + gap), cy - h / 2.0, bw, *h), bw / 2.0, &rgb(col, 1.0));
+    }
+
+    // subtle top highlight
+    if let Some(g) = NSGradient::initWithStartingColor_endingColor(
+        NSGradient::alloc(),
+        &NSColor::colorWithWhite_alpha(1.0, 0.0),
+        &NSColor::colorWithWhite_alpha(1.0, 0.10),
+    ) {
+        g.drawInRect_angle(rect(100.0, 520.0, 824.0, 404.0), 90.0);
+    }
+    NSGraphicsContext::restoreGraphicsState_class();
+    // hairline edge
+    NSColor::colorWithWhite_alpha(1.0, 0.12).setStroke();
+    shape.setLineWidth(3.0);
+    shape.stroke();
 }

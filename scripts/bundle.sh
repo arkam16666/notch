@@ -6,8 +6,10 @@ cd "$(dirname "$0")/.."
 cargo build --release
 APP=dist/Notch.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/notch "$APP/Contents/MacOS/notch"
+# app icon (regenerate with: notch --make-icon DIR && iconutil -c icns DIR/AppIcon.iconset -o assets/AppIcon.icns)
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -17,6 +19,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleName</key><string>Notch</string>
   <key>CFBundleDisplayName</key><string>Notch</string>
   <key>CFBundleExecutable</key><string>notch</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>0.1</string>
   <key>CFBundleVersion</key><string>1</string>
@@ -39,32 +42,7 @@ PLIST
 codesign --force --sign - -r='designated => identifier "local.notch"' "$APP" >/dev/null 2>&1
 echo "built $APP"
 
-# Separate "Notch Settings" app: same binary, started under the name
-# notch-settings (→ settings window instead of the island). Regular app with
-# a Dock icon, so it can be found in Launchpad / Spotlight.
-SET="dist/Notch Settings.app"
-rm -rf "$SET"
-mkdir -p "$SET/Contents/MacOS"
-cp target/release/notch "$SET/Contents/MacOS/notch-settings"
-cat > "$SET/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleIdentifier</key><string>local.notch.settings</string>
-  <key>CFBundleName</key><string>Notch Settings</string>
-  <key>CFBundleDisplayName</key><string>Notch Settings</string>
-  <key>CFBundleExecutable</key><string>notch-settings</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1</string>
-  <key>CFBundleVersion</key><string>1</string>
-  <key>LSMinimumSystemVersion</key><string>14.0</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-PLIST
-codesign --force --sign - -r='designated => identifier "local.notch.settings"' "$SET" >/dev/null 2>&1
-echo "built $SET"
+rm -rf "dist/Notch Settings.app"   # older builds had a separate settings app
 if [ "$1" != "--no-launch" ]; then
   pkill -x notch 2>/dev/null || true
   sleep 0.5

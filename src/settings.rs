@@ -1,23 +1,24 @@
-//! "Notch Settings": a separate, ordinary app window (Dock icon, ⌘Q) for
-//! turning the notch's features on and off. Started as
-//! `Notch Settings.app` (binary name `notch-settings`) or `notch --settings`.
+//! The settings window, inside Notch itself: opened from the right-click
+//! menu, or by opening Notch.app again (Launchpad / Spotlight / Finder)
+//! while it's already running. While it's open Notch shows a Dock icon so
+//! the window can be found with ⌘-Tab; closing it hides the icon again.
 //!
 //! Every change is written straight to `~/.claude/notch/config.json`; the
-//! running notch notices within a second, so there's no "Save" button.
+//! notch picks it up within a second, so there's no "Save" button.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::process::Command;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, ClassType, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSBackingStoreType, NSBox, NSBoxType,
-    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightBold,
-    NSFontWeightSemibold, NSMenu, NSMenuItem, NSPopUpButton, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply, NSBackingStoreType, NSBox, NSBoxType,
+    NSButton, NSColor, NSColorSpace, NSColorWell, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightBold,
+    NSFontWeightSemibold, NSMenu, NSMenuItem, NSPopUpButton, NSTextField, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask,
 };
-use objc2_foundation::{MainThreadMarker, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 
 use crate::config::{self, Config, BOOL_KEYS};
 
@@ -25,6 +26,11 @@ use crate::config::{self, Config, BOOL_KEYS};
 const IDLE_CHOICES: [(u32, &str); 6] =
     [(3, "3 วินาที"), (5, "5 วินาที"), (10, "10 วินาที"), (30, "30 วินาที"), (60, "1 นาที"), (0, "ไม่หุบ")];
 const TAG_LOGIN: isize = 100;
+const TAG_COLOR_WELL: isize = 200;
+/// Border colour styles (config value, menu title).
+/// Where the glow goes (config value, menu title).
+const BORDER_SCOPES: [(&str, &str); 2] = [("notch", "รอบ notch"), ("screen", "ขอบจอทั้งจอ")];
+const BORDER_STYLES: [(&str, &str); 3] = [("rainbow", "รุ้ง RGB (หมุน)"), ("artwork", "ตามสีปกเพลง"), ("solid", "สีเดียว")];
 
 pub struct Ivars {
     cfg: RefCell<Config>,
@@ -38,10 +44,37 @@ define_class!(
 
     unsafe impl NSObjectProtocol for Target {}
 
+    // Notch.app opened again while running → show the settings window
     unsafe impl NSApplicationDelegate for Target {
-        #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
-        fn last_window_closed(&self, _app: &NSApplication) -> bool {
-            true
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
+            show(self.mtm());
+            false
+        }
+
+        /// ⌘Q / "Quit" in the Dock while the settings window is open only
+        /// closes the settings — the notch keeps running. Real quitting goes
+        /// through `quit_app` (right-click menu on the notch).
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn should_terminate(&self, _app: &NSApplication) -> NSApplicationTerminateReply {
+            let really = REALLY_QUIT.load(std::sync::atomic::Ordering::SeqCst);
+            let open = WINDOW.with(|w| w.borrow().clone());
+            match open {
+                Some(w) if !really && NSApplication::sharedApplication(self.mtm()).isActive() => {
+                    w.performClose(None);
+                    NSApplicationTerminateReply::TerminateCancel
+                }
+                _ => NSApplicationTerminateReply::TerminateNow,
+            }
+        }
+    }
+
+    unsafe impl NSWindowDelegate for Target {
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _n: &NSNotification) {
+            WINDOW.with(|w| w.borrow_mut().take());
+            // back to a menu-bar-less, Dock-less accessory app
+            NSApplication::sharedApplication(self.mtm()).setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         }
     }
 
@@ -52,7 +85,7 @@ define_class!(
             let tag = sender.tag();
             if tag == TAG_LOGIN {
                 if let Err(e) = set_login_item(on) {
-                    eprintln!("notch-settings: login item: {e}");
+                    eprintln!("notch: login item: {e}");
                     sender.setState(if on { NSControlStateValueOff } else { NSControlStateValueOn });
                 }
                 return;
@@ -77,28 +110,61 @@ define_class!(
         fn reset(&self, _sender: &AnyObject) {
             *self.ivars().cfg.borrow_mut() = Config::default();
             save(&Config::default());
-            // simplest way to refresh every control: rebuild the window
+            // rebuild the window in place so every control shows the defaults
             let mtm = self.mtm();
-            if let Some(w) = NSApplication::sharedApplication(mtm).windows().firstObject() {
-                let frame = w.frame();
+            let old = WINDOW.with(|w| w.borrow_mut().take());
+            if let Some(old) = old {
+                let frame = old.frame();
+                old.setDelegate(None);
+                old.orderOut(None);
                 let new = build_window(self, mtm);
+                new.setDelegate(Some(ProtocolObject::from_ref(self)));
                 new.setFrameTopLeftPoint(NSPoint::new(frame.origin.x, frame.origin.y + frame.size.height));
                 new.makeKeyAndOrderFront(None);
-                w.close();
+                WINDOW.with(|w| *w.borrow_mut() = Some(new));
             }
         }
 
-        #[unsafe(method(openNotch:))]
-        fn open_notch(&self, _sender: &AnyObject) {
-            let _ = Command::new("/usr/bin/open").args(["-b", "local.notch"]).status();
+        #[unsafe(method(borderStyle:))]
+        fn border_style(&self, sender: &NSPopUpButton) {
+            if let Some((style, _)) = BORDER_STYLES.get(sender.indexOfSelectedItem() as usize) {
+                let mut c = self.ivars().cfg.borrow_mut();
+                c.border_style = style.to_string();
+                save(&c);
+                // the colour well only matters for "สีเดียว"
+                if let Some(w) = WINDOW.with(|w| w.borrow().clone()) {
+                    if let Some(v) = w.contentView().and_then(|cv| cv.viewWithTag(TAG_COLOR_WELL)) {
+                        if let Ok(well) = v.downcast::<NSColorWell>() {
+                            well.setEnabled(*style == "solid");
+                        }
+                    }
+                }
+            }
         }
 
-        #[unsafe(method(quitNotch:))]
-        fn quit_notch(&self, _sender: &AnyObject) {
-            // Ask the notch to quit itself (a normal exit, so the login item's
-            // KeepAlive doesn't bring it straight back).
-            if let Some(p) = quit_flag() {
-                let _ = std::fs::write(p, b"");
+        #[unsafe(method(borderScope:))]
+        fn border_scope(&self, sender: &NSPopUpButton) {
+            if let Some((scope, _)) = BORDER_SCOPES.get(sender.indexOfSelectedItem() as usize) {
+                let mut c = self.ivars().cfg.borrow_mut();
+                c.border_scope = scope.to_string();
+                save(&c);
+            }
+        }
+
+        #[unsafe(method(borderColor:))]
+        fn border_color(&self, sender: &NSColorWell) {
+            let Some(c) = sender.color().colorUsingColorSpace(&NSColorSpace::sRGBColorSpace()) else { return };
+            let mut cfg = self.ivars().cfg.borrow_mut();
+            cfg.border_color = config::to_hex((c.redComponent(), c.greenComponent(), c.blueComponent()));
+            cfg.border_style = "solid".into();
+            save(&cfg);
+        }
+
+
+        #[unsafe(method(done:))]
+        fn done(&self, _sender: &AnyObject) {
+            if let Some(w) = WINDOW.with(|w| w.borrow().clone()) {
+                w.performClose(None);
             }
         }
     }
@@ -106,13 +172,8 @@ define_class!(
 
 fn save(c: &Config) {
     if let Err(e) = config::save(c) {
-        eprintln!("notch-settings: save failed: {e}");
+        eprintln!("notch: settings save failed: {e}");
     }
-}
-
-/// File the running notch watches for; it deletes it and quits.
-pub fn quit_flag() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude/notch/quit"))
 }
 
 fn home() -> PathBuf {
@@ -312,7 +373,51 @@ fn build_window(target: &Target, mtm: MainThreadMarker) -> Retained<NSWindow> {
         l.checkbox("แบตเตอรี่", "battery", inner_x + half, top, half);
     });
 
-    l.section("ทั่วไป", 1.0, |l, top| {
+    l.section("หน้าตา", 3.0, |l, top| {
+        l.checkbox("ขอบไฟ (ตอน notch ขยาย)", "rgb_border", inner_x, top, inner_w);
+        let lab = l.label("บริเวณ", 13.0, 0.0, &NSColor::labelColor());
+        l.put(Retained::into_super(Retained::into_super(lab)), inner_x + 2.0, top + 2.0 * ROW + 3.0, 80.0, 18.0);
+        let scope = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), rect(0.0, 0.0, 170.0, 24.0), false);
+        for (_, t) in BORDER_SCOPES {
+            scope.addItemWithTitle(&ns(t));
+        }
+        let cur = BORDER_SCOPES.iter().position(|(s, _)| *s == l.cfg.border_scope).unwrap_or(0);
+        scope.selectItemAtIndex(cur as isize);
+        unsafe {
+            scope.setTarget(Some(l.target));
+            scope.setAction(Some(sel!(borderScope:)));
+        }
+        l.put(Retained::into_super(Retained::into_super(Retained::into_super(scope))), inner_x + inner_w - 44.0 - 8.0 - 170.0, top + 2.0 * ROW, 170.0, ROW);
+        let lab = l.label("สีขอบ", 13.0, 0.0, &NSColor::labelColor());
+        l.put(Retained::into_super(Retained::into_super(lab)), inner_x + 2.0, top + ROW + 3.0, 80.0, 18.0);
+        // colour well (solid colour)
+        let well = NSColorWell::initWithFrame(NSColorWell::alloc(mtm), rect(0.0, 0.0, 44.0, 24.0));
+        let (r, g, b) = config::parse_hex(&l.cfg.border_color).unwrap_or((1.0, 0.31, 0.85));
+        well.setColor(&NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0));
+        well.setTag(TAG_COLOR_WELL);
+        well.setEnabled(l.cfg.border_style == "solid");
+        unsafe {
+            well.setTarget(Some(l.target));
+            well.setAction(Some(sel!(borderColor:)));
+        }
+        l.put(Retained::into_super(Retained::into_super(well)), inner_x + inner_w - 44.0, top + ROW, 44.0, ROW);
+        // style popup
+        let pop = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), rect(0.0, 0.0, 170.0, 24.0), false);
+        for (_, t) in BORDER_STYLES {
+            pop.addItemWithTitle(&ns(t));
+        }
+        let cur = BORDER_STYLES.iter().position(|(s, _)| *s == l.cfg.border_style).unwrap_or(0);
+        pop.selectItemAtIndex(cur as isize);
+        unsafe {
+            pop.setTarget(Some(l.target));
+            pop.setAction(Some(sel!(borderStyle:)));
+        }
+        l.put(Retained::into_super(Retained::into_super(Retained::into_super(pop))), inner_x + inner_w - 44.0 - 8.0 - 170.0, top + ROW, 170.0, ROW);
+    });
+
+    l.section("ทั่วไป", 2.0, |l, top| {
+        l.checkbox("เปิดใช้ notch (ปิดเพื่อซ่อนชั่วคราว)", "notch_enabled", inner_x, top, inner_w);
+        let top = top + ROW;
         let installed = installed_binary().is_some();
         let title = if installed { "เปิด Notch เองตอนเข้าเครื่อง" } else { "เปิด Notch เองตอนเข้าเครื่อง (ต้องติดตั้งก่อน)" };
         l.raw_checkbox(title, TAG_LOGIN, login_plist().exists(), installed, inner_x, top, inner_w);
@@ -324,12 +429,10 @@ fn build_window(target: &Target, mtm: MainThreadMarker) -> Retained<NSWindow> {
         NSButton::buttonWithTitle_target_action(&ns(title), Some(l.target), Some(action), mtm)
     };
     let reset = button(&l, "ค่าเริ่มต้น", sel!(reset:));
-    let quit = button(&l, "ออกจาก Notch", sel!(quitNotch:));
-    let open = button(&l, "เปิด Notch", sel!(openNotch:));
+    let open = button(&l, "เสร็จ", sel!(done:));
     open.setKeyEquivalent(&ns("\r"));
     let y = l.y;
     l.put(Retained::into_super(Retained::into_super(reset)), MARGIN - 6.0, y, 110.0, 32.0);
-    l.put(Retained::into_super(Retained::into_super(quit)), W - MARGIN - 106.0 - 8.0 - 124.0 + 6.0, y, 124.0, 32.0);
     l.put(Retained::into_super(Retained::into_super(open)), W - MARGIN - 106.0 + 6.0, y, 106.0, 32.0);
     l.y += 32.0 + 16.0;
 
@@ -363,27 +466,69 @@ fn main_menu(mtm: MainThreadMarker) -> Retained<NSMenu> {
     let item = |title: &str, action, key: &str| unsafe {
         NSMenuItem::initWithTitle_action_keyEquivalent(NSMenuItem::alloc(mtm), &ns(title), Some(action), &ns(key))
     };
+    // both just close the settings window (the notch keeps running)
     app_menu.addItem(&item("ปิดหน้าต่าง", sel!(performClose:), "w"));
-    app_menu.addItem(&item("ออกจากการตั้งค่า", sel!(terminate:), "q"));
+    app_menu.addItem(&item("ปิดการตั้งค่า", sel!(performClose:), "q"));
     app_item.setSubmenu(Some(&app_menu));
     bar.addItem(&app_item);
     bar
 }
 
-pub fn run(mtm: MainThreadMarker) {
+/// Set right before a real quit (from the notch's menu).
+static REALLY_QUIT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Quit Notch for real (a normal exit, so the login item's KeepAlive doesn't
+/// restart it).
+pub fn quit_app(mtm: MainThreadMarker) {
+    REALLY_QUIT.store(true, std::sync::atomic::Ordering::SeqCst);
+    NSApplication::sharedApplication(mtm).terminate(None);
+}
+
+thread_local! {
+    static TARGET: RefCell<Option<Retained<Target>>> = const { RefCell::new(None) };
+    static WINDOW: RefCell<Option<Retained<NSWindow>>> = const { RefCell::new(None) };
+}
+
+fn target(mtm: MainThreadMarker) -> Retained<Target> {
+    TARGET.with(|t| {
+        t.borrow_mut()
+            .get_or_insert_with(|| {
+                let t = Target::alloc(mtm).set_ivars(Ivars { cfg: RefCell::new(config::load()) });
+                unsafe { msg_send![super(t), init] }
+            })
+            .clone()
+    })
+}
+
+/// Call once at startup: the app delegate (so opening Notch.app again shows
+/// the settings) and the menu used while the settings window is open.
+pub fn install(mtm: MainThreadMarker) {
     let app = NSApplication::sharedApplication(mtm);
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-    let target: Retained<Target> = {
-        let t = Target::alloc(mtm).set_ivars(Ivars { cfg: RefCell::new(config::load()) });
-        unsafe { msg_send![super(t), init] }
-    };
-    app.setDelegate(Some(ProtocolObject::from_ref(&*target)));
+    let t = target(mtm);
+    app.setDelegate(Some(ProtocolObject::from_ref(&*t)));
     app.setMainMenu(Some(&main_menu(mtm)));
-    let window = build_window(&target, mtm);
+}
+
+/// Open (or bring forward) the settings window.
+pub fn show(mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    let t = target(mtm);
+    let existing = WINDOW.with(|w| w.borrow().clone());
+    let window = match existing {
+        Some(w) => w,
+        None => {
+            // fresh values (the file may have been edited meanwhile)
+            *t.ivars().cfg.borrow_mut() = config::load();
+            let w = build_window(&t, mtm);
+            w.setDelegate(Some(ProtocolObject::from_ref(&*t)));
+            WINDOW.with(|slot| *slot.borrow_mut() = Some(w.clone()));
+            w
+        }
+    };
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
     window.makeKeyAndOrderFront(None);
     #[allow(deprecated)]
     app.activateIgnoringOtherApps(true);
-    app.run();
 }
 
 /// `notch --settings-snapshot FILE.png [dark]`: render the settings window's

@@ -1,7 +1,6 @@
 #!/bin/sh
 # One-shot install of Notch:
-#   1. build + bundle Notch.app and Notch Settings.app, copy them to
-#      /Applications (or ~/Applications)
+#   1. build + bundle Notch.app and copy it to /Applications (or ~/Applications)
 #   2. point Claude Code's hooks at the installed app (so the project folder
 #      isn't needed any more)
 #   3. start at login (LaunchAgent; restarts it if it crashes, but not if
@@ -25,9 +24,11 @@ echo "==> installing to $APP"
 launchctl bootout "gui/$UID_NUM" "$PLIST" 2>/dev/null || true
 pkill -x notch 2>/dev/null || true
 sleep 0.5
-rm -rf "$APP" "$DEST/Notch Settings.app"
+rm -rf "$APP"
 cp -R dist/Notch.app "$APP"
-cp -R "dist/Notch Settings.app" "$DEST/Notch Settings.app"
+# settings now live inside Notch.app — remove the old separate app
+pkill -x notch-settings 2>/dev/null || true
+rm -rf "/Applications/Notch Settings.app" "$HOME/Applications/Notch Settings.app"
 
 echo "==> Claude Code hooks → $BIN"
 python3 - "$BIN" <<'PY'

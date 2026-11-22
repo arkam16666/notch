@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    /// show the notch at all (off = hidden, app keeps running)
+    pub notch_enabled: bool,
     // tabs
     pub tab_music: bool,
     pub tab_claude: bool,
@@ -35,11 +37,21 @@ pub struct Config {
     // expanded island
     pub sysbar: bool,
     pub battery: bool,
+    // look
+    /// border around the open island
+    pub rgb_border: bool,
+    /// "rainbow" (turning RGB), "artwork" (the cover's colour) or "solid"
+    pub border_style: String,
+    /// "#RRGGBB" for the solid style
+    pub border_color: String,
+    /// "notch" (around the island) or "screen" (all four screen edges)
+    pub border_scope: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
+            notch_enabled: true,
             tab_music: true,
             tab_claude: true,
             tab_shelf: true,
@@ -58,13 +70,18 @@ impl Default for Config {
             banner_levels: true,
             sysbar: true,
             battery: true,
+            rgb_border: true,
+            border_style: "rainbow".into(),
+            border_color: "#FF4FD8".into(),
+            border_scope: "notch".into(),
         }
     }
 }
 
 /// Every boolean setting, by JSON key (the settings app builds its
 /// checkboxes from this, so the two never drift apart).
-pub const BOOL_KEYS: [&str; 17] = [
+pub const BOOL_KEYS: [&str; 19] = [
+    "notch_enabled",
     "tab_music",
     "tab_claude",
     "tab_shelf",
@@ -82,6 +99,7 @@ pub const BOOL_KEYS: [&str; 17] = [
     "banner_levels",
     "sysbar",
     "battery",
+    "rgb_border",
 ];
 
 impl Config {
@@ -97,6 +115,7 @@ impl Config {
 
     fn field_mut(&mut self, key: &str) -> Option<&mut bool> {
         Some(match key {
+            "notch_enabled" => &mut self.notch_enabled,
             "tab_music" => &mut self.tab_music,
             "tab_claude" => &mut self.tab_claude,
             "tab_shelf" => &mut self.tab_shelf,
@@ -114,6 +133,7 @@ impl Config {
             "banner_levels" => &mut self.banner_levels,
             "sysbar" => &mut self.sysbar,
             "battery" => &mut self.battery,
+            "rgb_border" => &mut self.rgb_border,
             _ => return None,
         })
     }
@@ -128,6 +148,21 @@ impl Config {
         if let Some(n) = v.get("idle_secs").and_then(Value::as_u64) {
             c.idle_secs = n.min(3600) as u32;
         }
+        if let Some(s) = v.get("border_style").and_then(Value::as_str) {
+            if ["rainbow", "artwork", "solid"].contains(&s) {
+                c.border_style = s.into();
+            }
+        }
+        if let Some(s) = v.get("border_scope").and_then(Value::as_str) {
+            if ["notch", "screen"].contains(&s) {
+                c.border_scope = s.into();
+            }
+        }
+        if let Some(s) = v.get("border_color").and_then(Value::as_str) {
+            if parse_hex(s).is_some() {
+                c.border_color = s.into();
+            }
+        }
         c
     }
 
@@ -137,6 +172,9 @@ impl Config {
             m.insert(k.into(), json!(self.get_bool(k)));
         }
         m.insert("idle_secs".into(), json!(self.idle_secs));
+        m.insert("border_style".into(), json!(self.border_style));
+        m.insert("border_color".into(), json!(self.border_color));
+        m.insert("border_scope".into(), json!(self.border_scope));
         Value::Object(m)
     }
 }
@@ -192,4 +230,19 @@ pub fn reload_if_changed() -> bool {
     let changed = old.as_ref().is_none_or(|(o, _)| *o != c);
     *CURRENT.write().unwrap() = Some((c, m));
     changed
+}
+
+/// "#RRGGBB" → (r, g, b) in 0..1
+pub fn parse_hex(s: &str) -> Option<(f64, f64, f64)> {
+    let h = s.strip_prefix('#')?;
+    if h.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(h, 16).ok()?;
+    Some((((n >> 16) & 255) as f64 / 255.0, ((n >> 8) & 255) as f64 / 255.0, (n & 255) as f64 / 255.0))
+}
+
+pub fn to_hex((r, g, b): (f64, f64, f64)) -> String {
+    let c = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    format!("#{:02X}{:02X}{:02X}", c(r), c(g), c(b))
 }

@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="ไอคอน Notch"></p>
+
 # Notch
 
 Dynamic Island สำหรับ MacBook ที่มี notch — เขียนด้วย Rust ล้วน (AppKit ผ่าน [`objc2`](https://github.com/madsmtm/objc2))
@@ -25,6 +27,8 @@ Dynamic Island สำหรับ MacBook ที่มี notch — เขีย
 | **☰ เพลย์ลิสต์ / คิว** — แบ่งครึ่ง notch, กดเพื่อเล่น | **เลือกลำโพง** — Mac, หูฟัง, Bluetooth, AirPlay |
 | ![สะท้อนหน้าจอ](docs/screenshots/mirror.png) | ![นับถอยหลัง](docs/screenshots/timer-collapsed.png) |
 | **สะท้อนหน้าจอ** — ทีวี / Apple TV ในเครือข่าย | **นับถอยหลังข้าง notch** ตอนหดอยู่ |
+
+<p align="center"><img src="docs/screenshots/edge.png" width="520" alt="ไฟขอบจอ"><br><b>ขอบไฟ</b> — รอบ notch หรือ<b>ขอบจอทั้งจอ</b> ตอนขยาย (รุ้ง RGB / สีปกเพลง / สีที่เลือก)</p>
 | ![ตัวจับเวลา](docs/screenshots/timer.png) | ![คลิปบอร์ด](docs/screenshots/clipboard.png) |
 | **⏱ ตัวจับเวลา** — นับถอยหลังโชว์ข้าง notch แม้ตอนหด | **📋 คลิปบอร์ด** — ข้อความที่คัดลอกล่าสุด คลิกเพื่อคัดลอกอีกครั้ง |
 
@@ -60,18 +64,18 @@ git clone <repo> notch && cd notch
 ./scripts/install.sh
 ```
 
-ตัวติดตั้งจะ build แล้วลง `/Applications/Notch.app` กับ `/Applications/Notch Settings.app`, ตั้ง hooks ของ Claude Code (ถ้ามี), ตั้งให้เปิดเองตอนเข้าเครื่อง แล้วเปิดแอปให้ — รันซ้ำเพื่ออัปเดต
+ตัวติดตั้งจะ build แล้วลง `/Applications/Notch.app`, ตั้ง hooks ของ Claude Code (ถ้ามี), ตั้งให้เปิดเองตอนเข้าเครื่อง แล้วเปิดแอปให้ — รันซ้ำเพื่ออัปเดต
 
 ถอนการติดตั้ง: `./scripts/uninstall.sh` (ใส่ `--purge` เพื่อลบข้อมูลใน `~/.claude/notch` ด้วย)
 
 ## ตั้งค่า
 
-<p align="center"><img src="docs/screenshots/settings.png" width="380" alt="แอป Notch Settings"></p>
+<p align="center"><img src="docs/screenshots/settings.png" width="380" alt="หน้าต่างตั้งค่า Notch"></p>
 
-เปิด **Notch Settings** (Launchpad / Spotlight) หรือคลิกขวาที่ notch → **ตั้งค่า Notch…**
+คลิกขวาที่ notch → **ตั้งค่า Notch…** หรือเปิด **Notch** จาก Launchpad / Spotlight อีกครั้งตอนที่มันรันอยู่
 เลือกแท็บที่จะแสดง, เปิด/ปิดแถบแจ้งเตือน, การเด้งตอนชี้เมาส์, waveform, CPU/RAM, เวลาก่อนหุบ และการเปิดเองตอนเข้าเครื่อง — มีผลทันที (เก็บไว้ที่ `~/.claude/notch/config.json`)
 
-ปิดแอป: คลิกขวาที่ notch → **ออกจาก Notch**
+ซ่อน notch ชั่วคราว: ตั้งค่า → **เปิดใช้ notch**; ปิดโปรแกรมจริงๆ: คลิกขวาที่ notch → **ออกจาก Notch** (⌘Q ในหน้าตั้งค่าแค่ปิดหน้าต่าง)
 
 ## สิทธิ์ที่ macOS จะถาม (ใช้เมื่อเปิดฟีเจอร์นั้นเท่านั้น)
 
@@ -100,7 +104,7 @@ YouTube แบบเต็ม (เวลา, เลื่อนเวลา, เ
 ```
 src/
   main.rs        UI ทั้งหมด (NSPanel + NSView วาดเอง)
-  settings.rs    แอปตั้งค่า (Notch Settings)
+  settings.rs    หน้าต่างตั้งค่า
   config.rs      ค่าตั้งค่า ~/.claude/notch/config.json
   player.rs      Spotify / Music / YouTube ผ่าน AppleScript
   status.rs      สถานะ Claude Code จาก hooks
@@ -117,7 +121,7 @@ src/
   sysinfo.rs     CPU / RAM / อุณหภูมิ
   …
 scripts/
-  bundle.sh      สร้าง dist/Notch.app + dist/Notch Settings.app
+  bundle.sh      สร้าง dist/Notch.app
   install.sh     ติดตั้งครั้งเดียวจบ
   uninstall.sh
 ```
