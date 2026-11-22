@@ -1,14 +1,17 @@
 #!/bin/sh
 # Remove Notch: stop it, remove the login item, the app and its Claude Code
 # hooks. Pass --purge to also delete its data (~/.claude/notch: shelf list,
-# Claude status files, ask-Claude folder).
+# Claude status files, ask-Claude folder, settings).
 set -e
 PLIST="$HOME/Library/LaunchAgents/local.notch.plist"
 
 launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 rm -f "$PLIST"
 pkill -x notch 2>/dev/null || true
-rm -rf /Applications/Notch.app "$HOME/Applications/Notch.app"
+pkill -x notch-settings 2>/dev/null || true
+rm -rf /Applications/Notch.app "$HOME/Applications/Notch.app" \
+       "/Applications/Notch Settings.app" "$HOME/Applications/Notch Settings.app"
+rm -f "$HOME/.claude/notch/local.notch.plist.off"
 
 python3 - <<'PY'
 import json, os

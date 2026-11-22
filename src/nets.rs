@@ -31,6 +31,8 @@ pub struct BtDev {
     pub name: String,
     pub addr: String,
     pub connected: bool,
+    /// speaker / headphones (Bluetooth "Audio" major device class)
+    pub audio: bool,
 }
 
 pub enum Req {
@@ -130,6 +132,7 @@ fn list_bt() -> Vec<BtDev> {
                 name: d.nameOrAddress().map(|s| s.to_string()).unwrap_or_else(|| "อุปกรณ์".into()),
                 addr: d.addressString().map(|s| s.to_string()).unwrap_or_default(),
                 connected: d.isConnected(),
+                audio: d.deviceClassMajor() == 0x04,
             }
         })
         .collect();

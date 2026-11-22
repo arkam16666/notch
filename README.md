@@ -21,6 +21,12 @@ Dynamic Island สำหรับ MacBook ที่มี notch — เขีย
 | **☁ อากาศ** | **🗃 ชั้นวาง** — พักไฟล์ไว้แล้วลากออก |
 | ![ลากไฟล์มา](docs/screenshots/drop.png) | ![ชาร์จ](docs/screenshots/charging.png) ![เสียง](docs/screenshots/volume.png) |
 | **ลากไฟล์มาที่ notch** — พักไว้ หรือ AirDrop | **แถบแจ้งเตือน** — ชาร์จ, เสียง/ความสว่าง |
+| ![เพลย์ลิสต์](docs/screenshots/queue.png) | ![ลำโพง](docs/screenshots/speakers.png) |
+| **☰ เพลย์ลิสต์ / คิว** — แบ่งครึ่ง notch, กดเพื่อเล่น | **เลือกลำโพง** — Mac, หูฟัง, Bluetooth, AirPlay |
+| ![สะท้อนหน้าจอ](docs/screenshots/mirror.png) | ![นับถอยหลัง](docs/screenshots/timer-collapsed.png) |
+| **สะท้อนหน้าจอ** — ทีวี / Apple TV ในเครือข่าย | **นับถอยหลังข้าง notch** ตอนหดอยู่ |
+| ![ตัวจับเวลา](docs/screenshots/timer.png) | ![คลิปบอร์ด](docs/screenshots/clipboard.png) |
+| **⏱ ตัวจับเวลา** — นับถอยหลังโชว์ข้าง notch แม้ตอนหด | **📋 คลิปบอร์ด** — ข้อความที่คัดลอกล่าสุด คลิกเพื่อคัดลอกอีกครั้ง |
 
 > ภาพสร้างด้วย `NOTCH_DEMO=1 notch --snapshot docs/screenshots` (เพลง/ตัวเลขสมมติ)
 
@@ -28,12 +34,14 @@ Dynamic Island สำหรับ MacBook ที่มี notch — เขีย
 
 | แท็บ | |
 |---|---|
-| ♪ **เพลง** | Spotify · Apple Music · YouTube / YouTube Music (Chrome, Brave, Edge, Safari) — ปก, ชื่อเพลง, เล่น/ข้าม, เลื่อนเวลา, ปรับเสียงของตัวเล่น, พื้นหลังปกเบลอ, แท่ง waveform เด้งตามเสียงจริง |
+| ♪ **เพลง** | Spotify · Apple Music · YouTube / YouTube Music (Chrome, Brave, Edge, Safari) — ปก, ชื่อเพลง, เล่น/ข้าม, เลื่อนเวลา, ปรับเสียงของตัวเล่น, พื้นหลังปกเบลอ, แท่ง waveform เด้งตามเสียงจริง, **เลือกเพลงจากเพลย์ลิสต์/คิว** (Apple Music, YouTube, YouTube Music), **เลือกลำโพง** (ลำโพง Mac, หูฟัง, Bluetooth, AirPlay) |
 | ✦ **Claude** | % การใช้งานรอบ 5 ชม. และรายสัปดาห์ (เหมือน `/usage`), สรุปวันนี้, **ถาม Claude** ได้จากใน notch (ใช้ Claude Code ที่ติดตั้งอยู่) |
 | 🗃 **ชั้นวาง** | ลากไฟล์มาพักไว้ แล้วค่อยลากออกไปวางที่อื่น |
+| 📋 **คลิปบอร์ด** | 7 ข้อความล่าสุดที่คัดลอก คลิกเพื่อคัดลอกอีกครั้ง (เก็บในหน่วยความจำเท่านั้น, ข้ามรหัสผ่านจากตัวจัดการรหัสผ่าน) |
+| ⏱ **ตัวจับเวลา** | 1 / 5 / 10 / 25 (Pomodoro) / 45 นาที, หยุดชั่วคราว, +1 นาที — นับถอยหลังข้าง notch และเด้งแจ้ง + เสียงตอนหมดเวลา |
 | ☁ **อากาศ** | อุณหภูมิ, สภาพอากาศ, พยากรณ์รายชั่วโมง (Open-Meteo) |
 | 📷 **กล้อง** | กระจกส่องหน้าจากกล้องหน้า |
-| ⚙ **ควบคุม** | Wi-Fi / Bluetooth (ดับเบิลคลิกเพื่อดูรายชื่อและเชื่อมต่อใน notch), โหมดมืด, AirDrop, เสียง, ความสว่าง |
+| ⚙ **ควบคุม** | Wi-Fi / Bluetooth (ดับเบิลคลิกเพื่อดูรายชื่อและเชื่อมต่อใน notch), โหมดมืด, AirDrop, สะท้อนหน้าจอ (รายชื่อทีวี / Apple TV ในเครือข่าย), เสียง, ความสว่าง |
 
 และเวลา notch หดอยู่:
 
@@ -52,11 +60,18 @@ git clone <repo> notch && cd notch
 ./scripts/install.sh
 ```
 
-ตัวติดตั้งจะ build แล้วลง `/Applications/Notch.app`, ตั้ง hooks ของ Claude Code (ถ้ามี), ตั้งให้เปิดเองตอนเข้าเครื่อง แล้วเปิดแอปให้ — รันซ้ำเพื่ออัปเดต
+ตัวติดตั้งจะ build แล้วลง `/Applications/Notch.app` กับ `/Applications/Notch Settings.app`, ตั้ง hooks ของ Claude Code (ถ้ามี), ตั้งให้เปิดเองตอนเข้าเครื่อง แล้วเปิดแอปให้ — รันซ้ำเพื่ออัปเดต
 
 ถอนการติดตั้ง: `./scripts/uninstall.sh` (ใส่ `--purge` เพื่อลบข้อมูลใน `~/.claude/notch` ด้วย)
 
-ปิดแอป: คลิกขวาที่ notch
+## ตั้งค่า
+
+<p align="center"><img src="docs/screenshots/settings.png" width="380" alt="แอป Notch Settings"></p>
+
+เปิด **Notch Settings** (Launchpad / Spotlight) หรือคลิกขวาที่ notch → **ตั้งค่า Notch…**
+เลือกแท็บที่จะแสดง, เปิด/ปิดแถบแจ้งเตือน, การเด้งตอนชี้เมาส์, waveform, CPU/RAM, เวลาก่อนหุบ และการเปิดเองตอนเข้าเครื่อง — มีผลทันที (เก็บไว้ที่ `~/.claude/notch/config.json`)
+
+ปิดแอป: คลิกขวาที่ notch → **ออกจาก Notch**
 
 ## สิทธิ์ที่ macOS จะถาม (ใช้เมื่อเปิดฟีเจอร์นั้นเท่านั้น)
 
@@ -85,12 +100,16 @@ YouTube แบบเต็ม (เวลา, เลื่อนเวลา, เ
 ```
 src/
   main.rs        UI ทั้งหมด (NSPanel + NSView วาดเอง)
+  settings.rs    แอปตั้งค่า (Notch Settings)
+  config.rs      ค่าตั้งค่า ~/.claude/notch/config.json
   player.rs      Spotify / Music / YouTube ผ่าน AppleScript
   status.rs      สถานะ Claude Code จาก hooks
   claude.rs      สรุป token จาก log ของ Claude Code
   claude_api.rs  % การใช้งานจริง
   ask.rs         ถาม Claude (`claude -p`)
   markdown.rs    แสดงคำตอบแบบ Markdown
+  clip.rs        ประวัติคลิปบอร์ด
+  airplay.rs     สะท้อนหน้าจอ
   tap.rs         Core Audio process tap → แท่ง waveform
   nets.rs        รายชื่อ Wi-Fi / Bluetooth
   controls.rs    Wi-Fi / Bluetooth / เสียง / ความสว่าง / โหมดมืด
@@ -98,7 +117,7 @@ src/
   sysinfo.rs     CPU / RAM / อุณหภูมิ
   …
 scripts/
-  bundle.sh      สร้าง dist/Notch.app
+  bundle.sh      สร้าง dist/Notch.app + dist/Notch Settings.app
   install.sh     ติดตั้งครั้งเดียวจบ
   uninstall.sh
 ```

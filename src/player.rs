@@ -81,11 +81,32 @@ pub enum Cmd {
     SetVolume(f64),
     /// Bring the player (app or browser tab) to the front.
     Focus,
+    /// Read the playlist / up-next list (→ Msg::Queue).
+    FetchQueue,
+    /// Play an item from that list (its `key`, a number).
+    PlayItem(u32),
+
 }
 
 pub enum Msg {
     Track(Option<Track>),
     Artwork(Option<Vec<u8>>),
+    Queue(Result<Queue, String>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct QItem {
+    pub key: String,
+    pub title: String,
+    pub artist: String,
+    pub current: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Queue {
+    /// "เพลย์ลิสต์ …", "คิวเพลง", "ถัดไป"
+    pub title: String,
+    pub items: Vec<QItem>,
 }
 
 fn osascript(script: &str) -> Option<String> {
@@ -475,6 +496,140 @@ fn browser_js(t: &Track, js: &str) {
     osascript(&script);
 }
 
+/// browser_js, but returning the script's result.
+fn browser_js_get(t: &Track, js: &str) -> Option<String> {
+    let (wid, tid) = t.tab.as_ref()?;
+    let js = as_str(js);
+    let script = match t.app {
+        App::Chromium(name) => format!(
+            r#"tell application "{name}" to execute (tab id {tid} of window id {wid}) javascript "{js}""#
+        ),
+        App::Safari => format!(r#"tell application "Safari" to do JavaScript "{js}" in tab {tid} of window id {wid}"#),
+        _ => return None,
+    };
+    osascript(&script)
+}
+
+// ----------------------------------------------------------- queue / playlist
+
+/// The list items on the page, in one place so reading and clicking agree:
+/// YouTube Music's queue, a YouTube playlist panel, or YouTube's "up next".
+const YT_ITEMS_JS: &str = r#"function __items(){
+  if (location.host.indexOf('music.youtube') >= 0)
+    return ['q', Array.from(document.querySelectorAll('ytmusic-player-queue #contents > ytmusic-player-queue-item, ytmusic-player-queue #contents > ytmusic-playlist-panel-video-wrapper-renderer ytmusic-player-queue-item'))];
+  var p = Array.from(document.querySelectorAll('ytd-playlist-panel-renderer#playlist #items ytd-playlist-panel-video-renderer'));
+  if (p.length) return ['p', p];
+  return ['n', Array.from(document.querySelectorAll('#secondary ytd-compact-video-renderer, #secondary yt-lockup-view-model')).slice(0, 25)];
+}"#;
+
+const YT_QUEUE_JS: &str = r#"(function(){
+  var r = __items(), kind = r[0];
+  var h = document.querySelector('ytd-playlist-panel-renderer#playlist #header-description .title, ytd-playlist-panel-renderer#playlist h3 yt-formatted-string');
+  var out = [kind + '\t' + (kind === 'p' && h ? h.textContent.trim() : '')];
+  r[1].forEach(function(e, i){
+    var q = function(s){ var x = e.querySelector(s); return x ? x.textContent.trim().replace(/\s+/g, ' ') : ''; };
+    var title = q('.song-title') || q('#video-title') || q('h3') || q('a[title]');
+    var by = q('.byline') || q('#byline') || q('#channel-name #text') || q('.yt-content-metadata-view-model__metadata-text') || q('.yt-content-metadata-view-model-wiz__metadata-text');
+    var cur = e.hasAttribute('selected') || e.getAttribute('play-button-state') === 'playing' || e.getAttribute('play-button-state') === 'paused';
+    if (title) out.push([i, title, by, cur ? 1 : 0].join('\t'));
+  });
+  return out.join('\n');
+})()"#;
+
+fn yt_play_js(i: usize) -> String {
+    format!(
+        r#"(function(){{
+  var e = __items()[1][{i}]; if (!e) return;
+  var b = e.querySelector('ytmusic-play-button-renderer') || e.querySelector('a#wc-endpoint') || e.querySelector('a#thumbnail') || e.querySelector('a[href*="watch"]') || e.querySelector('a');
+  (b || e).click();
+}})()"#
+    )
+}
+
+fn queue(t: &Track) -> Result<Queue, String> {
+    match t.app {
+        App::Spotify => Err("Spotify ไม่เปิดให้แอปอื่นดูคิวเพลง — ใช้ได้กับ Apple Music และ YouTube".into()),
+        App::Music => {
+            let out = osascript(
+                r#"set sep to character id 9
+                tell application "Music"
+                    set p to current playlist
+                    set n to count of tracks of p
+                    set i to 0
+                    try
+                        set i to index of current track
+                    end try
+                    set a to i - 3
+                    if a < 1 then set a to 1
+                    set b to a + 60
+                    if b > n then set b to n
+                    set out to (name of p) & linefeed
+                    repeat with k from a to b
+                        set tr to track k of p
+                        set out to out & k & sep & (name of tr) & sep & (artist of tr) & sep & ((k = i) as integer) & linefeed
+                    end repeat
+                    return out
+                end tell"#,
+            )
+            .ok_or("อ่านเพลย์ลิสต์ของ Music ไม่ได้")?;
+            let mut lines = out.lines();
+            let name = lines.next().unwrap_or("").trim().to_string();
+            Ok(Queue { title: format!("เพลย์ลิสต์ · {name}"), items: parse_items(lines) })
+        }
+        App::Chromium(_) | App::Safari => {
+            if !t.full {
+                return Err("ต้องเปิด Allow JavaScript from Apple Events ในเบราว์เซอร์ก่อน".into());
+            }
+            let out = browser_js_get(t, &format!("{YT_ITEMS_JS}
+{YT_QUEUE_JS}")).ok_or("อ่านรายการจากหน้าเว็บไม่ได้")?;
+            let mut lines = out.lines();
+            let (kind, name) = lines.next().unwrap_or("").split_once('\t').unwrap_or(("n", ""));
+            let title = match (kind, name.trim()) {
+                ("q", _) => "คิวเพลง".to_string(),
+                ("p", "") => "เพลย์ลิสต์".to_string(),
+                ("p", n) => format!("เพลย์ลิสต์ · {n}"),
+                _ => "ถัดไป".to_string(),
+            };
+            let mut items = parse_items(lines);
+            if kind != "q" {
+                // "Artist - Song (Official MV)" → Song / Artist, like the player
+                for it in &mut items {
+                    let (t, a) = tidy_youtube_title(&it.title, &it.artist);
+                    it.title = t;
+                    it.artist = a;
+                }
+            }
+            Ok(Queue { title, items })
+        }
+    }
+}
+
+fn parse_items<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<QItem> {
+    lines
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            (f.len() >= 4 && !f[1].trim().is_empty()).then(|| QItem {
+                key: f[0].trim().to_string(),
+                title: f[1].trim().to_string(),
+                artist: f[2].trim().to_string(),
+                current: f[3].trim() == "1",
+            })
+        })
+        .collect()
+}
+
+fn play_item(t: &Track, k: u32) {
+    match t.app {
+        App::Music => {
+            osascript(&format!(r#"tell application "Music" to play track {k} of current playlist"#));
+        }
+        App::Chromium(_) | App::Safari => {
+            browser_js(t, &format!("{YT_ITEMS_JS}\n{}", yt_play_js(k as usize)));
+        }
+        App::Spotify => {}
+    }
+}
+
 fn focus(t: &Track) {
     let name = t.app.process_name();
     let script = match (&t.app, &t.tab) {
@@ -575,6 +730,12 @@ fn run_cmd(t: &Track, cmd: Cmd) {
     if let Cmd::Focus = cmd {
         return focus(t);
     }
+    if let Cmd::PlayItem(key) = cmd {
+        return play_item(t, key);
+    }
+    if let Cmd::FetchQueue = cmd {
+        return; // handled in `run` (needs the channel)
+    }
     if let Cmd::SetVolume(v) = cmd {
         let n = (v.clamp(0.0, 1.0) * 100.0).round() as i64;
         match t.app {
@@ -614,7 +775,7 @@ fn run_cmd(t: &Track, cmd: Cmd) {
                 Cmd::PlayPause => "playpause",
                 Cmd::Next => "next track",
                 Cmd::Previous => "previous track",
-                Cmd::Focus | Cmd::Seek(_) | Cmd::SetVolume(_) => unreachable!(),
+                _ => unreachable!(),
             };
             osascript(&format!(
                 r#"tell application "{}" to {}"#,
@@ -627,7 +788,7 @@ fn run_cmd(t: &Track, cmd: Cmd) {
                 Cmd::PlayPause => YT_PLAYPAUSE_JS,
                 Cmd::Next => YT_NEXT_JS,
                 Cmd::Previous => YT_PREV_JS,
-                Cmd::Focus | Cmd::Seek(_) | Cmd::SetVolume(_) => unreachable!(),
+                _ => unreachable!(),
             };
             browser_js(t, js);
         }
@@ -678,7 +839,9 @@ pub fn run(tx: Sender<Msg>, cmds: Receiver<Cmd>) {
                     for (i, cmd) in cmds_now.into_iter().enumerate() {
                         let stale = (matches!(cmd, Cmd::SetVolume(_)) && Some(i) != last_vol)
                             || (matches!(cmd, Cmd::Seek(_)) && Some(i) != last_seek);
-                        if !stale {
+                        if matches!(cmd, Cmd::FetchQueue) {
+                            let _ = tx.send(Msg::Queue(queue(t)));
+                        } else if !stale {
                             run_cmd(t, cmd);
                         }
                     }
@@ -721,5 +884,23 @@ mod tests {
             video_id("https://www.youtube.com/watch?v=fyk6vjwI3wc&list=RD").as_deref(),
             Some("fyk6vjwI3wc")
         );
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    #[test]
+    #[ignore] // needs a running player
+    fn live_queue() {
+        let t = super::current().expect("nothing playing");
+        match super::queue(&t) {
+            Ok(q) => {
+                println!("{} ({} items)", q.title, q.items.len());
+                for i in q.items.iter().filter(|i| i.current).chain(q.items.iter().take(2)) {
+                    println!("  {} {} — {} {}", i.key, i.title, i.artist, if i.current { "◀" } else { "" });
+                }
+            }
+            Err(e) => println!("error: {e}"),
+        }
     }
 }
